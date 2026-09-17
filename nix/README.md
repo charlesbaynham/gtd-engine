@@ -5,7 +5,7 @@ others cost you nothing by existing.
 
 | You have | Use | What you get |
 |---|---|---|
-| Nothing but Python | `pip install -e '.gtd/mcp'` | See [`../mcp/README.md`](../mcp/README.md) |
+| Nothing but Python | `pip install -e ci -e mcp` | See [`../mcp/README.md`](../mcp/README.md) |
 | Nix, any OS | `nix run .#gtd-mcp -- stdio --vault ~/gtd` | A server for one local assistant, nothing installed |
 | A NixOS machine | `nixosModules.gtd-mcp` | A hardened systemd service on a host you already run |
 | A Proxmox server | `nix build .#proxmoxLxcTemplate` | A disposable container, rebuilt and replaced on every deploy |
@@ -30,10 +30,10 @@ two lines.
 
 ```nix
 {
-  inputs.gtd.url = "github:you/gtd";          # this repo
+  inputs.gtd-engine.url = "github:charlesbaynham/gtd-engine";   # this repo
 
   # ...in your host's configuration:
-  imports = [ inputs.gtd.nixosModules.gtd-mcp ];
+  imports = [ inputs.gtd-engine.nixosModules.gtd-mcp ];
   services.gtd-mcp.enable = true;
 }
 ```

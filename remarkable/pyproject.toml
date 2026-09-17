@@ -1,6 +1,6 @@
 [project]
 name = "gtd-remarkable"
-version = "0.1.0"
+version = "1.0.0"
 description = "reMarkable paper round-trip for the GTD vault: sheet out, handwritten decisions back in"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,7 +11,7 @@ dependencies = [
 [project.optional-dependencies]
 # The device / vision half. Installed from GitHub in CI; not needed to run
 # the vault-side tests.
-device = ["remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@main"]
+device = ["remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@e26a4565908559a1b542793034c991d0853ba295"]
 test = ["pytest>=7", "pyyaml>=6"]
 
 [project.scripts]

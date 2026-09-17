@@ -1,0 +1,53 @@
+# Reusable one-shot migration: converts a vault that still vendors .gtd/ to
+# depend on gtd-engine instead, and opens a PR with the result. A vault owner
+# adds a temporary caller workflow with `on: workflow_dispatch` pointing at
+# this file, runs it once, then deletes that temporary caller — see the
+# README, "Migrating an existing vault".
+#
+# permissions is the caller's to declare (contents: write, pull-requests:
+# write) — a reusable workflow inherits the caller's token, so this file
+# sets none.
+name: Migrate to gtd-engine
+
+on:
+  workflow_call: {}
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gtd-ci
+        run: |
+          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=ci"
+
+      - name: Migrate
+        run: python -m gtd_ci migrate --vault .
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to migrate."
+            exit 0
+          fi
+          git config user.name "GTD CI"
+          git config user.email "gtd-ci@users.noreply.github.com"
+          git checkout -b gtd-engine-migration
+          git add -A
+          git commit -m "Depend on gtd-engine v1 instead of vendoring .gtd/"
+          git push -f origin gtd-engine-migration
+          gh pr create \
+            --title "Depend on gtd-engine v1 instead of vendoring .gtd/" \
+            --body "Automated by gtd-engine's migrate workflow: \`.gtd/\` removed, thin caller workflows added.
+
+          If you had an untracked \`.gtd/nix/deployment.nix\`, copy it to \`deployment.nix\` at the vault root yourself — untracked files never reach this checkout, so the migration could not move it for you." \
+            --head gtd-engine-migration \
+            --base "${{ github.event.repository.default_branch }}" \
+            || echo "a PR for gtd-engine-migration already exists"

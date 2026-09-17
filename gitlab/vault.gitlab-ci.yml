@@ -1,0 +1,126 @@
+# GitLab equivalent of the reusable GitHub Actions workflows. A vault
+# includes this file — see gtd-template/.gitlab-ci.yml — rather than
+# vendoring gtd-engine's Python.
+#
+# Schedule (03:30 Europe/London) and the GTD_PUSH_TOKEN masked CI variable
+# (a project access token with write_repository) are configured in the
+# GitLab UI, not here.
+#
+# The `remarkable` job runs after `maintain` in the same pipeline when the
+# reMarkable variables are set:
+#   RMAPI_DEVICE_TOKEN   masked — the `devicetoken` from a local rmapi login
+#   OPENROUTER_API_KEY   masked — handwriting recognition
+#   OPENROUTER_MODEL     optional — model id, default in remarkable_gtd.scan.ocr
+#   OPENROUTER_AI_MODEL  optional — model for the ✦ AI agent alone
+#                        (falls back to OPENROUTER_MODEL, then the default)
+#   OPENROUTER_REASONING optional — effort/token budget/off for the ✦ AI
+#                        agent's thinking (default medium)
+#   OPENROUTER_READ_REASONING optional — same, for slot transcription
+#                        (default off: it reads glyphs, and reasoning there
+#                        costs ~44% of the call for no measured gain)
+#   REMARKABLE_FOLDER    optional — default "GTD Daily"
+#   REMARKABLE_ARCHIVE_FOLDER optional — default "<REMARKABLE_FOLDER>/Archive"
+#   REMARKABLE_KEEP_DAYS optional — archived sheets older than this are deleted (default 3)
+#   REMARKABLE_GTD_REF   optional — overrides the remarkable-gtd commit the engine pins
+#
+# GTD_ENGINE_REF pins which gtd-engine tag/ref every pip install below uses;
+# override it in the including project's own `variables:` to pin a version.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+variables:
+  GTD_ENGINE_REF: v1
+  VAULT_TZ: Europe/London
+
+stages:
+  - maintain
+  - remarkable
+
+.push-vault: &push-vault
+  - |
+    if [ -n "$(git status --porcelain)" ]; then
+      git add -A
+      git commit -F "$COMMIT_MSG"
+      for attempt in 1 2 3; do
+        git push -o ci.skip "https://gtd-ci:${GTD_PUSH_TOKEN}@gitlab.com/${CI_PROJECT_PATH}.git" HEAD:master && break
+        echo "push rejected, rebasing onto origin/master (attempt $attempt)"
+        git pull --rebase origin master
+      done
+    else
+      echo "Nothing changed, skipping commit."
+    fi
+
+maintain:
+  stage: maintain
+  image: python:3.12  # not -slim: pip installing from git+https, and the push, both need git
+  variables:
+    COMMIT_MSG: /tmp/commit-msg.txt
+  cache:
+    key: maintain-pip
+    paths: [.pip-cache/]
+  script:
+    - git config user.name "GTD CI"
+    - git config user.email "gtd-ci@noreply"
+    - git fetch origin master
+    - git checkout -B master origin/master  # runner starts in detached HEAD
+    - git pull --rebase origin master
+    - pip install --cache-dir .pip-cache "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=ci"
+    - python -m gtd_ci run --today "$(TZ=$VAULT_TZ date +%F)" --commit-message-file "$COMMIT_MSG"
+    - python -m gtd_ci refresh-docs --vault .
+    - *push-vault
+
+remarkable:
+  # Read back yesterday's sheet from the reMarkable, apply the handwritten
+  # decisions to the vault, push, then upload today's sheet. Steps:
+  #   process  — download every sheet in the folder, render strokes, scan,
+  #              apply; writes remarkable-out/processed.json + status page
+  #   (push)   — the vault changes land before anything is archived, so a
+  #              failed push just means the sheet is processed again next time
+  #   publish  — archive the processed sheets on the device, drop archived
+  #              sheets older than REMARKABLE_KEEP_DAYS, render + upload
+  stage: remarkable
+  needs: [maintain]
+  rules:
+    - if: '$RMAPI_DEVICE_TOKEN'
+  image: mcr.microsoft.com/playwright/python:v1.56.0-noble  # Chromium + fonts + python + git
+  variables:
+    COMMIT_MSG: /tmp/commit-msg.txt
+    RMAPI_VERSION: v0.0.35
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    # Every model call keeps its prompt, crop, raw reply and thinking here, so
+    # a wrong reading can be explained from the artifact two weeks later.
+    # remarkable-out/ is gitignored, so this reaches the artifact and nothing else.
+    OPENROUTER_TRACE_DIR: remarkable-out/llm-trace
+  cache:
+    key: remarkable-pip
+    paths: [.pip-cache/]
+  script:
+    - git config user.name "GTD CI"
+    - git config user.email "gtd-ci@noreply"
+    - git fetch origin master
+    - git checkout -B master origin/master
+    - git pull --rebase origin master
+    # rmapi (ddvk fork) binary
+    - curl -sSL "https://github.com/ddvk/rmapi/releases/download/${RMAPI_VERSION}/rmapi-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin rmapi
+    - rmapi version || true
+    # vault-side packages + the vision/device package from GitHub, all in one
+    # command (bare package names, no direct URLs, see gtd-engine's README).
+    - |
+      ENGINE="git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}"
+      if [ -n "$REMARKABLE_GTD_REF" ]; then
+        DEVICE=("gtd-remarkable @ ${ENGINE}#subdirectory=remarkable" "remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@${REMARKABLE_GTD_REF}")
+      else
+        DEVICE=("gtd-remarkable[device] @ ${ENGINE}#subdirectory=remarkable")
+      fi
+      pip install --cache-dir .pip-cache 'playwright==1.56.0' "gtd-ci @ ${ENGINE}#subdirectory=ci" "gtd-mcp @ ${ENGINE}#subdirectory=mcp" "${DEVICE[@]}"
+    - export TODAY="$(TZ=$VAULT_TZ date +%F)"
+    - python -m gtd_remarkable process --vault . --work-dir remarkable-out --today "$TODAY" --commit-message-file "$COMMIT_MSG"
+    - *push-vault
+    - python -m gtd_remarkable publish --vault . --work-dir remarkable-out --today "$TODAY"
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - remarkable-out/

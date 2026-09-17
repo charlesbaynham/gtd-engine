@@ -1,0 +1,66 @@
+# Reusable nightly GTD maintenance job (expire, stamp, promote, sort, lint,
+# then refresh FORMAT.md/CLAUDE.md and push). Called by a vault's thin
+# .github/workflows/nightly-maintenance.yml — see README.md.
+name: Nightly GTD maintenance
+
+on:
+  workflow_call:
+    inputs:
+      vault_tz:
+        type: string
+        default: Europe/London
+
+permissions:
+  contents: write
+
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    # Reusable workflows can't set top-level concurrency; this keeps two
+    # nightly runs (or a nightly and a manual dispatch) from racing on one vault.
+    concurrency:
+      group: gtd-maintenance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gtd-ci
+        # github.workflow_sha is the engine commit the caller's @v1 resolved
+        # to — never hardcode a version here.
+        run: |
+          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=ci"
+
+      - name: Run maintenance
+        run: |
+          python -m gtd_ci run \
+            --today "$(TZ=${{ inputs.vault_tz }} date +%F)" \
+            --commit-message-file /tmp/commit-msg.txt
+
+      - name: Refresh FORMAT.md / CLAUDE.md
+        run: python -m gtd_ci refresh-docs --vault .
+
+      - name: Commit and push
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing changed, skipping commit."
+            exit 0
+          fi
+          git config user.name "GTD CI"
+          git config user.email "gtd-ci@users.noreply.github.com"
+          git add -A
+          if [ -s /tmp/commit-msg.txt ]; then
+            git commit -F /tmp/commit-msg.txt
+          else
+            git commit -m "Refresh FORMAT.md and CLAUDE.md from gtd-engine"
+          fi
+          # Obsidian may have pushed while we ran; rebase and retry.
+          for attempt in 1 2 3; do
+            git push && exit 0
+            echo "push rejected, rebasing (attempt $attempt)"
+            git pull --rebase
+          done
+          exit 1

@@ -36,7 +36,7 @@ from a laptop too — useful for a first try, or for a vault that is not on
 GitLab at all:
 
 ```bash
-pip install -e '.gtd/ci' -e '.gtd/mcp' -e '.gtd/remarkable[device]'
+pip install -e ci -e mcp -e 'remarkable[device]'
 export OPENROUTER_API_KEY=sk-or-...        # required by `scan` and `process`
 export RMAPI_DEVICE_TOKEN=...              # omit if this machine already ran
                                            # `rmapi ls` and has ~/.config/rmapi

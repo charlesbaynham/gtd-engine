@@ -1,10 +1,10 @@
 # GTD vault format contract
 
 This file is the single source of truth for the file formats that automation
-touches. Two implementations read it: the Python CI in `.gtd/ci/` and the
+touches. Two implementations read it: the Python CI in [`gtd-engine`](https://github.com/charlesbaynham/gtd-engine)'s `ci/` and the
 Obsidian plugin (`gtd-tools`, repo
 [`charlesbaynham/obsidian-gtd-plugin`](https://github.com/charlesbaynham/obsidian-gtd-plugin)). Both
-are tested against the shared fixtures in `.gtd/fixtures/`. A rule that is not
+are tested against the shared fixtures in `gtd-engine`'s `fixtures/`. A rule that is not
 written here does not exist: add it here first, then implement it.
 
 Everything in the vault stays plain markdown that renders in stock Obsidian.
@@ -376,7 +376,7 @@ so a quiet night produces no commit.
 
 ### 8.1 `reMarkable status.md`
 
-Overwritten by the nightly reMarkable job (`.gtd/remarkable/`) whenever at
+Overwritten by the nightly reMarkable job (`gtd-engine`'s `remarkable/`) whenever at
 least one sheet came back from the device; left alone otherwise. Same shape
 as `CI status.md`: front matter, a `Run:` line, then per sheet `# Sheet
 <name>` with `## Applied`, `## Skipped` and `## Warnings` lists (`- none`
@@ -397,7 +397,7 @@ emitting it with no changes produces identical bytes.
 
 ## 10. Fixtures
 
-`.gtd/fixtures/<case>/` contains:
+`fixtures/<case>/` in `gtd-engine` contains:
 
 - `input/` — a vault snapshot (only the files the case needs)
 - `expected/` — the same snapshot after the jobs ran; `CI status.md` is not

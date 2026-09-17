@@ -1,0 +1,89 @@
+# Reusable Proxmox LXC template build for the gtd-mcp server. Publish logic
+# copied from nix-proxmox-cattle's build-template.yml@v1. Called by a
+# vault's thin .github/workflows/lxc-template.yml — see README.md.
+#
+# permissions is the caller's to declare (contents: write, for the release) —
+# a reusable workflow inherits the caller's token, so this file sets none.
+name: Build gtd-mcp LXC template
+
+on:
+  workflow_call:
+    inputs:
+      deployment_file:
+        type: string
+        default: deployment.nix
+      release_branch:
+        description: Branch whose builds are published as releases. Empty means the caller's default branch.
+        type: string
+        default: ""
+    secrets:
+      CACHIX_AUTH_TOKEN:
+        description: Optional token with write access to the streetfight cache.
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout gtd-engine
+        # The engine commit the caller's @v1 resolved to — never a hardcoded version.
+        uses: actions/checkout@v4
+        with:
+          repository: charlesbaynham/gtd-engine
+          ref: ${{ github.workflow_sha }}
+          path: .gtd-engine
+
+      - name: Resolve release branch
+        run: |
+          branch="${{ inputs.release_branch }}"
+          if [ -z "$branch" ]; then
+            branch="${{ github.event.repository.default_branch }}"
+          fi
+          echo "RELEASE_BRANCH=$branch" >> "$GITHUB_ENV"
+
+      - name: Carry the vault's deployment.nix into the engine checkout
+        run: |
+          if [ -f "${{ inputs.deployment_file }}" ]; then
+            cp "${{ inputs.deployment_file }}" .gtd-engine/nix/deployment.nix
+          fi
+
+      - uses: cachix/install-nix-action@v31
+
+      - uses: cachix/cachix-action@v17
+        with:
+          name: streetfight
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build the template
+        run: |
+          # path: not ./ — a git-fetched flake only sees TRACKED files, and
+          # deployment.nix was just copied in untracked.
+          nix build "path:./.gtd-engine#proxmoxLxcTemplate" --print-build-logs
+          built=$(echo result/tarball/*.tar.xz)
+          name="$(basename "$built" .tar.xz)-${GITHUB_SHA::7}.tar.xz"
+          mkdir -p dist
+          cp "$built" "dist/$name"
+          echo "TEMPLATE_NAME=$name" >>"$GITHUB_ENV"
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref != format('refs/heads/{0}', env.RELEASE_BRANCH)
+        with:
+          name: proxmox-lxc-template
+          path: dist/${{ env.TEMPLATE_NAME }}
+          retention-days: 3
+
+      - name: Publish as a release asset
+        if: github.ref == format('refs/heads/{0}', env.RELEASE_BRANCH)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="template-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          gh release create "$tag" \
+            --title "Proxmox LXC template $tag" \
+            --notes "Proxmox LXC rootfs template built from ${GITHUB_SHA}." \
+            --target "$GITHUB_SHA" \
+            || echo "release $tag exists; uploading the asset to it"
+          gh release upload "$tag" "dist/$TEMPLATE_NAME" --clobber

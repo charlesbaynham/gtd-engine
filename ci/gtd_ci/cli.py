@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 _LONDON = ZoneInfo("Europe/London")
 
-from . import model
+from . import docs_sync, migrate as migrate_mod, model
 from .jobs import expire, promote, sort, stamp
 from .jobs import lint as lint_job
 from .report import Report, findings_body, render_status
@@ -155,6 +155,22 @@ def cmd_job(job_name: str, args: argparse.Namespace) -> None:
         _write_status_if_changed(vault, report, today, today_given)
 
 
+def cmd_refresh_docs(args: argparse.Namespace) -> None:
+    try:
+        docs_sync.refresh_docs(Path(args.vault), args.dry_run)
+    except NotADirectoryError:
+        print(f"error: not a vault directory: {args.vault}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_migrate(args: argparse.Namespace) -> None:
+    try:
+        migrate_mod.migrate(Path(args.vault), dry_run=args.dry_run, remarkable=args.remarkable, lxc=args.lxc)
+    except NotADirectoryError:
+        print(f"error: not a vault directory: {args.vault}", file=sys.stderr)
+        sys.exit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gtd_ci")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -173,6 +189,18 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name)
         add_common(p)
         p.set_defaults(func=lambda args, name=name: cmd_job(name, args))
+
+    refresh_docs_parser = sub.add_parser("refresh-docs")
+    refresh_docs_parser.add_argument("--vault", default=".")
+    refresh_docs_parser.add_argument("--dry-run", action="store_true")
+    refresh_docs_parser.set_defaults(func=cmd_refresh_docs)
+
+    migrate_parser = sub.add_parser("migrate")
+    migrate_parser.add_argument("--vault", default=".")
+    migrate_parser.add_argument("--dry-run", action="store_true")
+    migrate_parser.add_argument("--remarkable", action="store_true")
+    migrate_parser.add_argument("--lxc", action="store_true")
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     return parser
 

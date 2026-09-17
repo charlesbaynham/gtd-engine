@@ -169,8 +169,10 @@ invites encoding corruption and gives you nothing to diff.
 
 ## 6. Automation
 
-A nightly job (`.gtd/ci/`, run by `.github/workflows/nightly-maintenance.yml`
-or `.gitlab-ci.yml`) does five things in order:
+The nightly job lives in [`gtd-engine`](https://github.com/charlesbaynham/gtd-engine),
+not in this vault. This vault's `.github/workflows/nightly-maintenance.yml` (or
+`.gitlab-ci.yml`) is a thin caller that pulls the engine at tag `v1` and runs
+it here. It does five things in order:
 
 1. **expire** — dated tickler lines, scheduled rows and delegated chase-bys
    whose date has arrived go back into `Inbox.md` with a `[from …]` prefix.
@@ -183,16 +185,19 @@ or `.gitlab-ci.yml`) does five things in order:
 Run it yourself:
 
 ```bash
-pip install -e '.gtd/ci[test]'
+pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@v1#subdirectory=ci"
 python -m gtd_ci run --dry-run --today "$(date +%F)"   # writes nothing
 python -m gtd_ci run --today "$(date +%F)"
-pytest .gtd/ci
 ```
 
 `--vault PATH` overrides the vault root (default: the current directory).
 
 `CI status.md` and `reMarkable status.md` are outputs. Never edit them; they
 are overwritten on every run.
+
+`FORMAT.md`, and everything above the marker line in this file, are refreshed
+by that nightly job from `gtd-engine` and overwritten on every run. Put
+vault-specific notes below the marker, not above it.
 
 ---
 
@@ -231,18 +236,3 @@ and the project looks stalled.
 | Project reported stalled | No unchecked item, or none surfaced in any table | Add an action, or add a row linking the project |
 | Priority sorting looks wrong | Priorities blank or tied | Use distinct integers for the things that matter |
 | Nightly job ran but nothing was committed | Push permission | GitHub: workflow permissions must be read/write. GitLab: `GTD_PUSH_TOKEN` must exist and be unexpired |
-
----
-
-## 9. This vault
-
-Fill these in when you set the repo up (see [`SETUP.md`](SETUP.md)), and delete
-the lines for anything you did not enable:
-
-- **Repo:** `<url>`
-- **Default branch:** `<main or master>`
-- **Nightly maintenance:** GitHub Actions / GitLab CI / not enabled
-- **Obsidian plugins:** Obsidian Git, [gtd-tools](https://github.com/charlesbaynham/obsidian-gtd-plugin) (via BRAT)
-- **MCP server:** enabled / not enabled (`.gtd/mcp/README.md`)
-- **Runs as a service:** no / NixOS module / Proxmox LXC (`.gtd/nix/README.md`)
-- **reMarkable round-trip:** enabled / not enabled (`.gtd/remarkable/README.md`)

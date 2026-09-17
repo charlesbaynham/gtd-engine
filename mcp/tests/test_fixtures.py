@@ -1,4 +1,4 @@
-"""Runs every case under .gtd/mcp/fixtures/ against the ops layer directly
+"""Runs every case under mcp/fixtures/ against the ops layer directly
 (no git — that plumbing is exercised separately in test_store.py).
 
 case.yml keys: `today`, `op` (a gtd_mcp.ops function name), `args` (kwargs

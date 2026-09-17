@@ -9,8 +9,8 @@ operations, read views and the git-backed store around them.
 ## Running locally
 
 ```bash
-cd /path/to/gtd
-pip install -e '.gtd/ci[test]' -e '.gtd/mcp[test]'
+cd /path/to/gtd-engine
+pip install -e 'ci[test]' -e 'mcp[test]'
 
 # stdio, for a local Claude Code session, against a scratch vault directory
 # (no git remote — the store just commits locally, or writes plainly if the
@@ -72,13 +72,13 @@ place of a line number.
 ## Testing
 
 ```bash
-cd /path/to/gtd
+cd /path/to/gtd-engine
 pip install 'mcp==1.26.0'   # pin exactly: floating to a newer SDK mid-run
                             # is a known source of silent breakage
-pip install -e '.gtd/ci[test]' -e '.gtd/mcp[test]'
-pytest .gtd/mcp
+pip install -e 'ci[test]' -e 'mcp[test]'
+cd mcp && pytest
 ```
 
-Fixtures live in `.gtd/mcp/fixtures/mcp-<name>/`, in the same `input/` /
-`expected/` / `case.yml` shape as `.gtd/fixtures/`, but `case.yml` carries
+Fixtures live in `mcp/fixtures/mcp-<name>/`, in the same `input/` /
+`expected/` / `case.yml` shape as `../fixtures/`, but `case.yml` carries
 `op: <name>` and `args: {...}` instead of `jobs: [...]`.

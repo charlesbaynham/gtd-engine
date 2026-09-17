@@ -1,0 +1,57 @@
+# The engine's own CI: the ~178 tests across all three packages, a flake
+# build, and a proof that the one-command git install (see
+# the repo README) actually works.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ci -e 'mcp[test]' -e 'remarkable[test]'
+
+      # Three separate steps, not one pytest invocation: the three tests/
+      # dirs collide under one run (ModuleNotFoundError: tests.test_fixtures).
+      - name: Test gtd_ci
+        run: cd ci && pytest -q
+
+      - name: Test gtd_mcp
+        run: cd mcp && pytest -q
+
+      - name: Test gtd_remarkable
+        run: cd remarkable && pytest -q
+
+  nix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#gtd-mcp --print-build-logs
+
+  git-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prove the one-command git install works
+        run: |
+          python -m venv /tmp/git-install-venv
+          /tmp/git-install-venv/bin/pip install \
+            "gtd-ci @ git+file://$PWD#subdirectory=ci" \
+            "gtd-mcp @ git+file://$PWD#subdirectory=mcp"

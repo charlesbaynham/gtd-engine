@@ -1,5 +1,5 @@
 {
-  description = "gtd-mcp: a structure-aware MCP server on a markdown GTD vault";
+  description = "gtd-engine: the shared GTD vault CI, MCP server and reMarkable round-trip";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -26,19 +26,19 @@
         rec {
           gtd-ci = py.buildPythonPackage {
             pname = "gtd-ci";
-            version = "0.1.0";
+            version = "1.0.0";
             pyproject = true;
             # Package source only — never ./., or the vault's markdown would
             # ride along into the store as part of a "code" derivation.
-            src = ./.gtd/ci;
+            src = ./ci;
             build-system = [ py.setuptools ];
           };
 
           gtd-mcp = py.buildPythonApplication {
             pname = "gtd-mcp";
-            version = "0.1.0";
+            version = "1.0.0";
             pyproject = true;
-            src = ./.gtd/mcp;
+            src = ./mcp;
             build-system = [ py.setuptools ];
             dependencies = [ gtd-ci py.mcp ];
             meta.mainProgram = "gtd-mcp";
@@ -48,14 +48,14 @@
       # The portable module: works on any NixOS machine — bare metal, a VM, a
       # systemd-nspawn container, an LXC you manage by hand.
       gtdMcpModule = { pkgs, ... }: {
-        imports = [ ./.gtd/nix/gtd-mcp.nix ];
+        imports = [ ./nix/gtd-mcp.nix ];
         services.gtd-mcp.package = lib.mkDefault (gtdPackages pkgs).gtd-mcp;
       };
 
       # Your own settings, if you made them. Without this file the template
       # below still builds; it just produces a local-only server.
-      deploymentModules = lib.optional (builtins.pathExists ./.gtd/nix/deployment.nix)
-        ./.gtd/nix/deployment.nix;
+      deploymentModules = lib.optional (builtins.pathExists ./nix/deployment.nix)
+        ./nix/deployment.nix;
     in
     lib.recursiveUpdate
       {
@@ -76,7 +76,7 @@
         stateDir = "/data";
         modules = [
           self.nixosModules.gtd-mcp
-          ./.gtd/nix/cattle.nix
+          ./nix/cattle.nix
           { services.gtd-mcp.enable = true; }
         ] ++ deploymentModules;
       });

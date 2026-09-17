@@ -1,4 +1,4 @@
-"""Runs every case under .gtd/fixtures/ against the CLI job pipeline.
+"""Runs every case under fixtures/ against the CLI job pipeline.
 
 case.yml keys consumed here: `today`, `jobs` (list of job names, or
 `[run]` for the full pipeline), `findings` (optional exact multiset of
