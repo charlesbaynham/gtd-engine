@@ -29,10 +29,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install gtd-ci
-        # github.workflow_sha is the engine commit the caller's @v1 resolved
-        # to — never hardcode a version here.
+        # github.job_workflow_sha is the engine commit the caller's @v1 resolved
+        # to (workflow_sha would be the caller's own commit) — never hardcode a version here.
         run: |
-          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=ci"
+          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=ci"
 
       - name: Run maintenance
         run: |

@@ -24,7 +24,7 @@ jobs:
 
       - name: Install gtd-ci
         run: |
-          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=ci"
+          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=ci"
 
       - name: Migrate
         run: python -m gtd_ci migrate --vault .

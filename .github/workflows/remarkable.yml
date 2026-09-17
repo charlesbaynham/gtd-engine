@@ -85,15 +85,15 @@ jobs:
         run: |
           if [ -n "${{ inputs.remarkable_gtd_ref }}" ]; then
             pip install 'playwright==1.56.0' \
-              "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=ci" \
-              "gtd-mcp @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=mcp" \
-              "gtd-remarkable @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=remarkable" \
+              "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=ci" \
+              "gtd-mcp @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=mcp" \
+              "gtd-remarkable @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=remarkable" \
               "remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@${{ inputs.remarkable_gtd_ref }}"
           else
             pip install 'playwright==1.56.0' \
-              "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=ci" \
-              "gtd-mcp @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=mcp" \
-              "gtd-remarkable[device] @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.workflow_sha }}#subdirectory=remarkable"
+              "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=ci" \
+              "gtd-mcp @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=mcp" \
+              "gtd-remarkable[device] @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=remarkable"
           fi
 
       - name: Process device sheets
