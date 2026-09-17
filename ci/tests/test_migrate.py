@@ -44,6 +44,9 @@ def _build_vault(
     claude_md: str,
     gitlab_mentions_rmapi: bool = True,
     with_deployment_nix: bool = True,
+    with_gitlab_ci: bool = True,
+    with_old_nightly: bool = True,
+    with_old_lxc: bool = True,
 ) -> Path:
     vault = tmp_path / "vault"
     shutil.copytree(FIXTURES_DIR / "sort" / "input", vault)
@@ -57,14 +60,17 @@ def _build_vault(
 
     workflows = vault / ".github" / "workflows"
     workflows.mkdir(parents=True)
-    (workflows / "nightly-maintenance.yml").write_text("name: old nightly\n", encoding="utf-8")
-    (workflows / "lxc-template.yml").write_text("name: old lxc\n", encoding="utf-8")
+    if with_old_nightly:
+        (workflows / "nightly-maintenance.yml").write_text("name: old nightly\n", encoding="utf-8")
+    if with_old_lxc:
+        (workflows / "lxc-template.yml").write_text("name: old lxc\n", encoding="utf-8")
     (workflows / "prune-storage.yml").write_text(_PRUNE_STORAGE_YML, encoding="utf-8")
 
-    gitlab_body = "stages: [test]\n"
-    if gitlab_mentions_rmapi:
-        gitlab_body += "variables:\n  RMAPI_DEVICE_TOKEN: masked\n"
-    (vault / ".gitlab-ci.yml").write_text(gitlab_body, encoding="utf-8")
+    if with_gitlab_ci:
+        gitlab_body = "stages: [test]\n"
+        if gitlab_mentions_rmapi:
+            gitlab_body += "variables:\n  RMAPI_DEVICE_TOKEN: masked\n"
+        (vault / ".gitlab-ci.yml").write_text(gitlab_body, encoding="utf-8")
 
     (vault / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
     (vault / ".gitignore").write_text("old-entry\n", encoding="utf-8")
@@ -101,12 +107,35 @@ def test_migrate_writes_thin_callers_and_keeps_prune_storage(tmp_path: Path) -> 
 
 
 def test_migrate_skips_remarkable_and_lxc_without_signal(tmp_path: Path) -> None:
-    vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, gitlab_mentions_rmapi=False, with_deployment_nix=False)
+    vault = _build_vault(
+        tmp_path, claude_md=_CLAUDE_WITH_SECTION_9,
+        gitlab_mentions_rmapi=False, with_deployment_nix=False, with_old_lxc=False,
+    )
     migrate(vault)
 
     workflows = vault / ".github" / "workflows"
     assert not (workflows / "remarkable.yml").exists()
     assert not (workflows / "lxc-template.yml").exists()
+
+
+def test_migrate_keeps_lxc_that_existed_without_deployment_nix(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, with_deployment_nix=False)
+    migrate(vault)
+    assert "gtd-engine/.github/workflows/lxc-template.yml@v1" in (vault / ".github" / "workflows" / "lxc-template.yml").read_text(encoding="utf-8")
+    assert "no deployment.nix found" in capsys.readouterr().err
+
+
+def test_migrate_gitlab_hosted_vault_gets_no_github_nightly(tmp_path: Path) -> None:
+    vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, with_old_nightly=False)
+    migrate(vault)
+    assert not (vault / ".github" / "workflows" / "nightly-maintenance.yml").exists()
+    assert "include:" in (vault / ".gitlab-ci.yml").read_text(encoding="utf-8")
+
+
+def test_migrate_vault_with_no_ci_gets_github_nightly(tmp_path: Path) -> None:
+    vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, with_old_nightly=False, with_gitlab_ci=False)
+    migrate(vault)
+    assert "nightly-maintenance.yml@v1" in (vault / ".github" / "workflows" / "nightly-maintenance.yml").read_text(encoding="utf-8")
 
 
 def test_migrate_remarkable_flag_forces_caller(tmp_path: Path) -> None:

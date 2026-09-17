@@ -181,7 +181,11 @@ def migrate(vault: Path, dry_run: bool = False, remarkable: bool = False, lxc: b
     if not vault.is_dir():
         raise NotADirectoryError(vault)
 
+    workflows = vault / ".github" / "workflows"
     wants_remarkable = _wants_remarkable(vault, remarkable)
+    # A vault that maintains itself from GitLab must not gain a second nightly.
+    wants_nightly = (workflows / "nightly-maintenance.yml").is_file() or not (vault / ".gitlab-ci.yml").is_file()
+    had_lxc = (workflows / "lxc-template.yml").is_file()
 
     deployment_exists = _move_deployment_nix(vault, dry_run)
     _delete(vault / ".gtd", vault, dry_run)
@@ -193,10 +197,15 @@ def migrate(vault: Path, dry_run: bool = False, remarkable: bool = False, lxc: b
     # further changes and one whose reMarkable/LXC setup was removed does.
     # prune-storage.yml is untouched: it already calls nix-proxmox-cattle
     # directly and owns nothing this migration changes.
-    workflows = vault / ".github" / "workflows"
-    _sync_workflow(workflows / "nightly-maintenance.yml", True, _NIGHTLY_MAINTENANCE_YML, vault, dry_run)
+    _sync_workflow(workflows / "nightly-maintenance.yml", wants_nightly, _NIGHTLY_MAINTENANCE_YML, vault, dry_run)
     _sync_workflow(workflows / "remarkable.yml", wants_remarkable, _REMARKABLE_YML, vault, dry_run)
-    _sync_workflow(workflows / "lxc-template.yml", lxc or deployment_exists, _LXC_TEMPLATE_YML, vault, dry_run)
+    _sync_workflow(workflows / "lxc-template.yml", lxc or deployment_exists or had_lxc, _LXC_TEMPLATE_YML, vault, dry_run)
+    if had_lxc and not deployment_exists:
+        print(
+            "lxc-template.yml kept but no deployment.nix found; create one from "
+            "deployment.nix.example or the template will build a local-only server",
+            file=sys.stderr,
+        )
 
     gitlab_ci = vault / ".gitlab-ci.yml"
     if gitlab_ci.is_file():
