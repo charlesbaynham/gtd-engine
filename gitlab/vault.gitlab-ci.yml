@@ -169,16 +169,17 @@ lxc-template:
     # deployment.nix was just copied in untracked.
     - if [ -f deployment.nix ]; then cp deployment.nix .gtd-engine/nix/deployment.nix; fi
     - nix build "path:./.gtd-engine#proxmoxLxcTemplate" --print-build-logs
+    # One block, not build.env handed between script items — simpler, and
+    # sidesteps whatever made a previous attempt's ". build.env" say "file
+    # not found" one step later despite the write appearing to succeed.
     - |
+      set -e
       built=$(echo result/tarball/*.tar.xz)
       asset="$(basename "$built" .tar.xz)-${CI_COMMIT_SHORT_SHA}.tar.xz"
       cp "$built" "$asset"
       sha="$(sha256sum "$asset")"; echo "${sha%% *}" > "$asset.sha256"  # no awk in nixos/nix:latest
-      echo "ASSET=$asset" >build.env
-      echo "PKG_VERSION=template-$(date -u +%Y%m%d)-${CI_COMMIT_SHORT_SHA}" >>build.env
-    - |
-      . build.env
-      base="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PKG_NAME}/${PKG_VERSION}"
-      nix shell nixpkgs#curl -c curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET" "$base/$ASSET"
-      nix shell nixpkgs#curl -c curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET.sha256" "$base/$ASSET.sha256"
-      echo "published $ASSET as $PKG_NAME/$PKG_VERSION"
+      version="template-$(date -u +%Y%m%d)-${CI_COMMIT_SHORT_SHA}"
+      base="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PKG_NAME}/${version}"
+      nix shell nixpkgs#curl -c curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$asset" "$base/$asset"
+      nix shell nixpkgs#curl -c curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$asset.sha256" "$base/$asset.sha256"
+      echo "published $asset as $PKG_NAME/$version"
