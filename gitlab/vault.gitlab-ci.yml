@@ -23,12 +23,24 @@
 #   REMARKABLE_KEEP_DAYS optional — archived sheets older than this are deleted (default 3)
 #   REMARKABLE_GTD_REF   optional — overrides the remarkable-gtd commit the engine pins
 #
+# The lxc-template job builds and publishes the gtd-mcp Proxmox LXC template
+# from this vault's own deployment.nix — the GitLab equivalent of gtd-engine's
+# GitHub reusable lxc-template.yml, for a vault whose GitHub mirror cannot run
+# Actions (archived, or simply absent). It needs:
+#   BUILD_LXC_TEMPLATE   CI/CD variable, set to "true" — off by default, same
+#                        gate as the GitHub side's repository variable
+#   deployment.nix       at the vault root (copy deployment.nix.example)
+# and runs on push (path-filtered to deployment.nix) or a manual `web` run, on
+# top of the schedule/web sources maintain and remarkable already use.
+#
 # GTD_ENGINE_REF pins which gtd-engine tag/ref every pip install below uses;
 # override it in the including project's own `variables:` to pin a version.
 workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes: [deployment.nix]
 
 variables:
   GTD_ENGINE_REF: v1
@@ -37,6 +49,7 @@ variables:
 stages:
   - maintain
   - remarkable
+  - lxc-template
 
 .push-vault: &push-vault
   - |
@@ -54,6 +67,11 @@ stages:
 
 maintain:
   stage: maintain
+  rules:
+    # Excludes the push source added above for lxc-template: a deployment.nix
+    # edit must not also re-run maintenance on the vault.
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
   image: python:3.12  # not -slim: pip installing from git+https, and the push, both need git
   variables:
     COMMIT_MSG: /tmp/commit-msg.txt
@@ -83,7 +101,7 @@ remarkable:
   stage: remarkable
   needs: [maintain]
   rules:
-    - if: '$RMAPI_DEVICE_TOKEN'
+    - if: '($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web") && $RMAPI_DEVICE_TOKEN'
   image: mcr.microsoft.com/playwright/python:v1.56.0-noble  # Chromium + fonts + python + git
   variables:
     COMMIT_MSG: /tmp/commit-msg.txt
@@ -124,3 +142,35 @@ remarkable:
     expire_in: 2 weeks
     paths:
       - remarkable-out/
+
+lxc-template:
+  stage: lxc-template
+  needs: []
+  rules:
+    - if: '$BUILD_LXC_TEMPLATE == "true"'
+  image: nixos/nix:latest
+  variables:
+    # A fixed package name for every vault this file runs in — the file that
+    # matters is the asset inside it, matched by the cattle-deploy.sh
+    # convention (<registry-key>-lxc-proxmox-…), same as the GitHub side.
+    PKG_NAME: cattle-template
+    NIX: nix --extra-experimental-features 'nix-command flakes'
+  script:
+    - $NIX shell nixpkgs#git -c git clone --branch "$GTD_ENGINE_REF" --depth 1 https://github.com/charlesbaynham/gtd-engine.git .gtd-engine
+    # path: not ./ — a git-fetched flake only sees TRACKED files, and
+    # deployment.nix was just copied in untracked.
+    - if [ -f deployment.nix ]; then cp deployment.nix .gtd-engine/nix/deployment.nix; fi
+    - $NIX build "path:./.gtd-engine#proxmoxLxcTemplate" --print-build-logs
+    - |
+      built=$(echo result/tarball/*.tar.xz)
+      asset="$(basename "$built" .tar.xz)-${CI_COMMIT_SHORT_SHA}.tar.xz"
+      cp "$built" "$asset"
+      sha256sum "$asset" | awk '{print $1}' > "$asset.sha256"
+      echo "ASSET=$asset" >build.env
+      echo "PKG_VERSION=template-$(date -u +%Y%m%d)-${CI_COMMIT_SHORT_SHA}" >>build.env
+    - |
+      . build.env
+      base="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PKG_NAME}/${PKG_VERSION}"
+      curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET" "$base/$ASSET"
+      curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET.sha256" "$base/$ASSET.sha256"
+      echo "published $ASSET as $PKG_NAME/$PKG_VERSION"
