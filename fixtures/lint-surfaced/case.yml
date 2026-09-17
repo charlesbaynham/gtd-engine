@@ -1,0 +1,9 @@
+today: 2026-09-10
+jobs: [lint]
+findings:
+  - {severity: warn, code: row-mismatch, file: Delegated.md}
+  - {severity: warn, code: row-mismatch, file: Tickler/Next month.md}
+  - {severity: warn, code: dangling-link, file: Scheduled.md}
+  - {severity: warn, code: project-stalled, file: Project details/Row Mismatch Project.md}
+  - {severity: warn, code: project-stalled, file: Project details/Unsurfaced Project.md}
+  - {severity: info, code: similar-names, file: Project details}

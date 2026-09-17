@@ -1,0 +1,23 @@
+# Your deployment's own settings. Copy this file to `deployment.nix` beside it
+# and edit; flake.nix picks it up automatically when it exists, and builds a
+# local-only server that talks to nobody when it does not.
+#
+# This file goes in git — it holds no secrets. Tokens live only in the
+# environmentFile on the machine (see README.md, "Secrets").
+{ ... }:
+{
+  services.gtd-mcp = {
+    # Where the vault lives. The service clones it on first start and pushes
+    # its commits back. Leave it out entirely for a local-only server.
+    remoteUrl = "https://gitlab.com/you/gtd.git";
+    branch = "master";
+
+    # Every tool call must carry an X-Auth-User header matching one of these.
+    # Leave the list empty only if nothing untrusted can reach the port.
+    allowedUsers = [ "your-login" ];
+
+    # Uncomment if you wire up the GitLab push webhook, so the unit refuses to
+    # start with the secret unset rather than silently never syncing on push.
+    # requiredSecrets = [ "GTD_PUSH_TOKEN" "GTD_WEBHOOK_SECRET" ];
+  };
+}

@@ -1,0 +1,9 @@
+today: 2026-09-10
+op: triage
+args:
+  to: "delegated"
+  person: "Jamie"
+  chase_by: "2026-10-01"
+  handle_of:
+    kind: "tickler:Next week"
+    match: "Existing tickler item"

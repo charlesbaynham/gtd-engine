@@ -1,0 +1,9 @@
+today: 2026-09-10
+op: triage
+args:
+  to: "next-actions"
+  deadline: "2026-09-30"
+  text: "Chase the return by phone"
+  handle_of:
+    kind: "inbox"
+    match: "Returned tickler item"

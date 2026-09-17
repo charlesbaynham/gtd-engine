@@ -1,0 +1,11 @@
+---
+gtd: project
+---
+
+> [!info] 80% of projects are just an outcome and a next action 
+
+# Goal
+Do a new thing.
+## Next Actions
+
+- [ ] Kickoff

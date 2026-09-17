@@ -1,0 +1,6 @@
+today: 2026-09-10
+op: add_to_tickler
+args:
+  bucket: "Next week"
+  text: "Follow up on sample"
+  project: "Sample"

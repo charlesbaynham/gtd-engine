@@ -1,0 +1,7 @@
+today: 2026-09-10
+jobs: [run]
+findings:
+  - {severity: error, code: parse-failure, file: Tickler/Next week.md}
+  - {severity: error, code: parse-failure, file: Next actions.md}
+  - {severity: error, code: parse-failure, file: Delegated.md}
+  - {severity: error, code: parse-failure, file: Scheduled.md}

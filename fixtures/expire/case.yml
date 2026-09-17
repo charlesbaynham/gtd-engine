@@ -1,0 +1,4 @@
+today: 2026-09-10
+jobs: [expire]
+findings:
+  - {severity: warn, code: missed-schedule, file: Scheduled.md}

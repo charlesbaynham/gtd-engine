@@ -1,0 +1,7 @@
+today: 2026-09-10
+op: add_next_action
+args:
+  action: "Do sample work"
+  project: "Sample"
+  deadline: "2026-09-15"
+  priority: 4

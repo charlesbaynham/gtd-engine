@@ -1,0 +1,7 @@
+today: 2026-09-10
+op: triage
+args:
+  to: "project:Sample"
+  handle_of:
+    kind: "inbox"
+    match: "Existing inbox item"

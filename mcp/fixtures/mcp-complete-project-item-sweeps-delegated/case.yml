@@ -1,0 +1,7 @@
+today: 2026-09-10
+op: complete
+args:
+  handle_of:
+    kind: "project:Sample"
+    match: "Existing action"
+expect: {removed_next_action_rows: 0, removed_other_rows: 1}

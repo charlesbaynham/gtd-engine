@@ -1,0 +1,16 @@
+today: 2026-09-10
+jobs: []
+strip:
+  - from: "[from Tickler/Next week, due 2026-09-05] Return library books"
+    to: "Return library books"
+  - from: "[2026-09-01] Already-stamped line kept as-is"
+    to: "Already-stamped line kept as-is"
+  - from: "* [from Scheduled, 2026-09-01] Marker and provenance both dropped"
+    to: "Marker and provenance both dropped"
+  - from: "- Plain marker dropped"
+    to: "Plain marker dropped"
+  - from: "-No space, not a marker"
+    to: "-No space, not a marker"
+rows:
+  - cells: ["Return library books", "", "", ""]
+    line: "| Return library books |  |  |  |"

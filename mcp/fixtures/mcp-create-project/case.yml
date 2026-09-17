@@ -1,0 +1,6 @@
+today: 2026-09-10
+op: create_project
+args:
+  name: "New Project"
+  goal: "Do a new thing."
+  first_action: "Kickoff"

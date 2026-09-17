@@ -1,0 +1,12 @@
+today: 2026-09-10
+jobs: [lint]
+findings:
+  - {severity: warn, code: dangling-link, file: Next actions.md}
+  - {severity: warn, code: bad-date, file: Next actions.md}
+  - {severity: warn, code: bad-date, file: Next actions.md}
+  - {severity: warn, code: bad-priority, file: Next actions.md}
+  - {severity: warn, code: bad-status, file: Scheduled.md}
+  - {severity: warn, code: project-stalled, file: Project details/Alpha Project.md}
+  - {severity: warn, code: project-stalled, file: Project details/Alpha-Project.md}
+  - {severity: warn, code: project-stalled, file: Project details/Zeta Project.md}
+  - {severity: info, code: similar-names, file: Project details}

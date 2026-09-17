@@ -1,0 +1,7 @@
+today: 2026-09-10
+op: schedule
+args:
+  thing: "Report review"
+  date: "2026-09-25"
+  status: "to-schedule"
+  project: "Sample"

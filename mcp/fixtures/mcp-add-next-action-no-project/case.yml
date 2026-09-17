@@ -1,0 +1,4 @@
+today: 2026-09-10
+op: add_next_action
+args:
+  action: "Plain action"

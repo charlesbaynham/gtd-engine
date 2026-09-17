@@ -1,0 +1,8 @@
+today: 2026-09-10
+op: delegate
+args:
+  thing: "Book flights"
+  person: "Alex"
+  priority: 3
+expect:
+  chase_by_defaulted: "2026-09-17"

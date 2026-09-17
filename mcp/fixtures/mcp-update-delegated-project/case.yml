@@ -1,0 +1,7 @@
+today: 2026-09-10
+op: update
+args:
+  project: "Sample"
+  handle_of:
+    kind: "delegated"
+    match: "Ask Bob"

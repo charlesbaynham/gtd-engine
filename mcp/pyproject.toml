@@ -1,0 +1,22 @@
+[project]
+name = "gtd-mcp"
+version = "0.1.0"
+description = "MCP server exposing the GTD vault as structured tools"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.26,<2",
+    "gtd-ci",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pyyaml>=6", "httpx>=0.27"]
+
+[project.scripts]
+gtd-mcp = "gtd_mcp.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gtd_mcp*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

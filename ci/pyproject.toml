@@ -1,0 +1,16 @@
+[project]
+name = "gtd-ci"
+version = "0.1.0"
+description = "Nightly maintenance CI for the GTD vault"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pyyaml>=6"]
+
+[tool.setuptools.packages.find]
+include = ["gtd_ci*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

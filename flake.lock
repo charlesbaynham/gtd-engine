@@ -1,0 +1,43 @@
+{
+  "nodes": {
+    "cattle": {
+      "locked": {
+        "lastModified": 1788778392,
+        "narHash": "sha256-Ahfal2xHMZwPE917ZS/CNNywFJj2tWkruiRAo+WjIAg=",
+        "owner": "charlesbaynham",
+        "repo": "nix-proxmox-cattle",
+        "rev": "60dbdebaa2728eed1f155507e9cc7fb82fa1455d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "charlesbaynham",
+        "repo": "nix-proxmox-cattle",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1789114715,
+        "narHash": "sha256-ugpsyk3NM2s87vXfUiIIiibbJ4Pp0JPS5p/3mfs+q+c=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "21a67dc470149f337cecafbe965d8d252a390518",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-26.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "cattle": "cattle",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
