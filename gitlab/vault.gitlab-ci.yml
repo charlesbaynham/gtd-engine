@@ -160,9 +160,10 @@ lxc-template:
     # mangled args. NIX_CONFIG sidesteps quoting entirely.
     NIX_CONFIG: "experimental-features = nix-command flakes"
   script:
-    # This image ships nix and little else — no awk, curl unconfirmed — so
-    # install everything the rest of the script needs up front, once.
-    - nix profile install nixpkgs#git nixpkgs#curl
+    # This image ships git already (as git-minimal, hence no `nix shell
+    # nixpkgs#git` here — that conflicts with it on git-upload-archive) but
+    # not awk, and curl is unconfirmed; `nix shell ... -c` pulls each in
+    # for one command without touching the profile, so nothing can conflict.
     - git clone --branch "$GTD_ENGINE_REF" --depth 1 https://github.com/charlesbaynham/gtd-engine.git .gtd-engine
     # path: not ./ — a git-fetched flake only sees TRACKED files, and
     # deployment.nix was just copied in untracked.
@@ -178,6 +179,6 @@ lxc-template:
     - |
       . build.env
       base="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PKG_NAME}/${PKG_VERSION}"
-      curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET" "$base/$ASSET"
-      curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET.sha256" "$base/$ASSET.sha256"
+      nix shell nixpkgs#curl -c curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET" "$base/$ASSET"
+      nix shell nixpkgs#curl -c curl --fail -sS --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$ASSET.sha256" "$base/$ASSET.sha256"
       echo "published $ASSET as $PKG_NAME/$PKG_VERSION"
