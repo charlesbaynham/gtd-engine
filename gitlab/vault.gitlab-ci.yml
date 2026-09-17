@@ -160,7 +160,10 @@ lxc-template:
     # mangled args. NIX_CONFIG sidesteps quoting entirely.
     NIX_CONFIG: "experimental-features = nix-command flakes"
   script:
-    - nix shell nixpkgs#git -c git clone --branch "$GTD_ENGINE_REF" --depth 1 https://github.com/charlesbaynham/gtd-engine.git .gtd-engine
+    # This image ships nix and little else — no awk, curl unconfirmed — so
+    # install everything the rest of the script needs up front, once.
+    - nix profile install nixpkgs#git nixpkgs#curl
+    - git clone --branch "$GTD_ENGINE_REF" --depth 1 https://github.com/charlesbaynham/gtd-engine.git .gtd-engine
     # path: not ./ — a git-fetched flake only sees TRACKED files, and
     # deployment.nix was just copied in untracked.
     - if [ -f deployment.nix ]; then cp deployment.nix .gtd-engine/nix/deployment.nix; fi
@@ -169,7 +172,7 @@ lxc-template:
       built=$(echo result/tarball/*.tar.xz)
       asset="$(basename "$built" .tar.xz)-${CI_COMMIT_SHORT_SHA}.tar.xz"
       cp "$built" "$asset"
-      sha256sum "$asset" | awk '{print $1}' > "$asset.sha256"
+      sha="$(sha256sum "$asset")"; echo "${sha%% *}" > "$asset.sha256"  # no awk in nixos/nix:latest
       echo "ASSET=$asset" >build.env
       echo "PKG_VERSION=template-$(date -u +%Y%m%d)-${CI_COMMIT_SHORT_SHA}" >>build.env
     - |
