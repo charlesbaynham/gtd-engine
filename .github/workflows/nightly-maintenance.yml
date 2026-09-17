@@ -10,6 +10,12 @@ on:
         type: string
         default: Europe/London
 
+# The engine ref every install below uses. Same major as the tag vaults call
+# this file by, so the workflow and the code it installs move together —
+# github.job_workflow_sha would be exact but is empty on a tag reference.
+env:
+  GTD_ENGINE_REF: v1
+
 permissions:
   contents: write
 
@@ -29,10 +35,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install gtd-ci
-        # github.job_workflow_sha is the engine commit the caller's @v1 resolved
-        # to (workflow_sha would be the caller's own commit) — never hardcode a version here.
         run: |
-          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=ci"
+          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=ci"
 
       - name: Run maintenance
         run: |

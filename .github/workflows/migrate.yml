@@ -12,6 +12,12 @@ name: Migrate to gtd-engine
 on:
   workflow_call: {}
 
+# The engine ref every install below uses. Same major as the tag vaults call
+# this file by, so the workflow and the code it installs move together —
+# github.job_workflow_sha would be exact but is empty on a tag reference.
+env:
+  GTD_ENGINE_REF: v1
+
 jobs:
   migrate:
     runs-on: ubuntu-latest
@@ -24,7 +30,7 @@ jobs:
 
       - name: Install gtd-ci
         run: |
-          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${{ github.job_workflow_sha }}#subdirectory=ci"
+          pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=ci"
 
       - name: Migrate
         run: python -m gtd_ci migrate --vault .

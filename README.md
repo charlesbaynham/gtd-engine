@@ -46,6 +46,10 @@ git tag -f v1
 git push -f origin v1
 ```
 
+A new major is a search-and-replace of the tag name: `GTD_ENGINE_REF` in the
+four reusable workflows and in `gitlab/vault.gitlab-ci.yml` (so the `v2`
+files install `v2`), then each vault's callers move from `@v1` to `@v2`.
+
 Bump the **major** version only for a lockstep-breaking change — the kind
 where an old vault would misbehave against the new engine, like the
 `gtd.decisions/1` → `/2` schema change that prompted splitting the engine out

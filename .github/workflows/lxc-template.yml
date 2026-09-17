@@ -21,6 +21,12 @@ on:
         description: Optional token with write access to the streetfight cache.
         required: false
 
+# The engine ref every install below uses. Same major as the tag vaults call
+# this file by, so the workflow and the code it installs move together —
+# github.job_workflow_sha would be exact but is empty on a tag reference.
+env:
+  GTD_ENGINE_REF: v1
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,11 +34,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Checkout gtd-engine
-        # The engine commit the caller's @v1 resolved to — never a hardcoded version.
         uses: actions/checkout@v4
         with:
           repository: charlesbaynham/gtd-engine
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ env.GTD_ENGINE_REF }}
           path: .gtd-engine
 
       - name: Resolve release branch
