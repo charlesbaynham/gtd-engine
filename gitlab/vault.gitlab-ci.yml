@@ -154,13 +154,17 @@ lxc-template:
     # matters is the asset inside it, matched by the cattle-deploy.sh
     # convention (<registry-key>-lxc-proxmox-…), same as the GitHub side.
     PKG_NAME: cattle-template
-    NIX: nix --extra-experimental-features 'nix-command flakes'
+    # A shell variable holding quote characters does not re-quote on unquoted
+    # expansion — `nix --extra-experimental-features 'nix-command flakes'`
+    # as one variable word-splits into 'nix-command and flakes' as two
+    # mangled args. NIX_CONFIG sidesteps quoting entirely.
+    NIX_CONFIG: "experimental-features = nix-command flakes"
   script:
-    - $NIX shell nixpkgs#git -c git clone --branch "$GTD_ENGINE_REF" --depth 1 https://github.com/charlesbaynham/gtd-engine.git .gtd-engine
+    - nix shell nixpkgs#git -c git clone --branch "$GTD_ENGINE_REF" --depth 1 https://github.com/charlesbaynham/gtd-engine.git .gtd-engine
     # path: not ./ — a git-fetched flake only sees TRACKED files, and
     # deployment.nix was just copied in untracked.
     - if [ -f deployment.nix ]; then cp deployment.nix .gtd-engine/nix/deployment.nix; fi
-    - $NIX build "path:./.gtd-engine#proxmoxLxcTemplate" --print-build-logs
+    - nix build "path:./.gtd-engine#proxmoxLxcTemplate" --print-build-logs
     - |
       built=$(echo result/tarball/*.tar.xz)
       asset="$(basename "$built" .tar.xz)-${CI_COMMIT_SHORT_SHA}.tar.xz"
