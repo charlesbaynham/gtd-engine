@@ -182,9 +182,10 @@ def migrate(vault: Path, dry_run: bool = False, remarkable: bool = False, lxc: b
         raise NotADirectoryError(vault)
 
     workflows = vault / ".github" / "workflows"
-    wants_remarkable = _wants_remarkable(vault, remarkable)
-    # A vault that maintains itself from GitLab must not gain a second nightly.
+    # A vault that maintains itself from GitLab must not gain a second nightly,
+    # and the GitHub reMarkable caller only makes sense after a GitHub nightly.
     wants_nightly = (workflows / "nightly-maintenance.yml").is_file() or not (vault / ".gitlab-ci.yml").is_file()
+    wants_remarkable = wants_nightly and _wants_remarkable(vault, remarkable)
     had_lxc = (workflows / "lxc-template.yml").is_file()
 
     deployment_exists = _move_deployment_nix(vault, dry_run)

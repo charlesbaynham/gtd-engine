@@ -129,6 +129,7 @@ def test_migrate_gitlab_hosted_vault_gets_no_github_nightly(tmp_path: Path) -> N
     vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, with_old_nightly=False)
     migrate(vault)
     assert not (vault / ".github" / "workflows" / "nightly-maintenance.yml").exists()
+    assert not (vault / ".github" / "workflows" / "remarkable.yml").exists()
     assert "include:" in (vault / ".gitlab-ci.yml").read_text(encoding="utf-8")
 
 
