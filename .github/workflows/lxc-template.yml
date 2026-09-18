@@ -1,94 +1,48 @@
-# Reusable Proxmox LXC template build for the gtd-mcp server. Publish logic
-# copied from nix-proxmox-cattle's build-template.yml@v1. Called by a
-# vault's thin .github/workflows/lxc-template.yml — see README.md.
+# The Proxmox LXC template for gtd-mcp, built and released from THIS repo.
 #
-# permissions is the caller's to declare (contents: write, for the release) —
-# a reusable workflow inherits the caller's token, so this file sets none.
+# The image is generic — it carries no vault URL, no branch and no caller list
+# — so there is one template for every deployment, and a deployment configures
+# it from /data/config.env on its own state volume. That is why this builds
+# here rather than in each vault: before, a vault built its own image only to
+# bake three lines of deployment.nix into it.
+#
+# Path-filtered: the template filename carries the commit sha, so an unfiltered
+# build would republish — and therefore redeploy every container running it —
+# on every unrelated commit, a docs typo included.
+#
+# It also runs on pull requests, where it builds but does not publish (the
+# reusable workflow releases only from the release branch). Without that, a
+# flake that does not evaluate is found *after* merge, and what is downstream
+# of a merge here is an unattended deploy.
+#
+# ⚠️ The two `paths:` lists must stay identical. Actions does not support YAML
+# anchors, so this is duplication the format forces.
 name: Build gtd-mcp LXC template
 
 on:
-  workflow_call:
-    inputs:
-      deployment_file:
-        type: string
-        default: deployment.nix
-      release_branch:
-        description: Branch whose builds are published as releases. Empty means the caller's default branch.
-        type: string
-        default: ""
-    secrets:
-      CACHIX_AUTH_TOKEN:
-        description: Optional token with write access to the streetfight cache.
-        required: false
-
-# The engine ref every install below uses. Same major as the tag vaults call
-# this file by, so the workflow and the code it installs move together —
-# github.job_workflow_sha would be exact but is empty on a tag reference.
-env:
-  GTD_ENGINE_REF: v1
+  push:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - ci/**
+      - mcp/**
+      - nix/**
+      - .github/workflows/lxc-template.yml
+  pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - ci/**
+      - mcp/**
+      - nix/**
+      - .github/workflows/lxc-template.yml
+  workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout gtd-engine
-        uses: actions/checkout@v4
-        with:
-          repository: charlesbaynham/gtd-engine
-          ref: ${{ env.GTD_ENGINE_REF }}
-          path: .gtd-engine
-
-      - name: Resolve release branch
-        run: |
-          branch="${{ inputs.release_branch }}"
-          if [ -z "$branch" ]; then
-            branch="${{ github.event.repository.default_branch }}"
-          fi
-          echo "RELEASE_BRANCH=$branch" >> "$GITHUB_ENV"
-
-      - name: Carry the vault's deployment.nix into the engine checkout
-        run: |
-          if [ -f "${{ inputs.deployment_file }}" ]; then
-            cp "${{ inputs.deployment_file }}" .gtd-engine/nix/deployment.nix
-          fi
-
-      - uses: cachix/install-nix-action@v31
-
-      - uses: cachix/cachix-action@v17
-        with:
-          name: streetfight
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build the template
-        run: |
-          # path: not ./ — a git-fetched flake only sees TRACKED files, and
-          # deployment.nix was just copied in untracked.
-          nix build "path:./.gtd-engine#proxmoxLxcTemplate" --print-build-logs
-          built=$(echo result/tarball/*.tar.xz)
-          name="$(basename "$built" .tar.xz)-${GITHUB_SHA::7}.tar.xz"
-          mkdir -p dist
-          cp "$built" "dist/$name"
-          echo "TEMPLATE_NAME=$name" >>"$GITHUB_ENV"
-          ls -lh dist/
-
-      - uses: actions/upload-artifact@v4
-        if: github.ref != format('refs/heads/{0}', env.RELEASE_BRANCH)
-        with:
-          name: proxmox-lxc-template
-          path: dist/${{ env.TEMPLATE_NAME }}
-          retention-days: 3
-
-      - name: Publish as a release asset
-        if: github.ref == format('refs/heads/{0}', env.RELEASE_BRANCH)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="template-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
-          gh release create "$tag" \
-            --title "Proxmox LXC template $tag" \
-            --notes "Proxmox LXC rootfs template built from ${GITHUB_SHA}." \
-            --target "$GITHUB_SHA" \
-            || echo "release $tag exists; uploading the asset to it"
-          gh release upload "$tag" "dist/$TEMPLATE_NAME" --clobber
+  lxc-template:
+    permissions:
+      contents: write
+    uses: charlesbaynham/nix-proxmox-cattle/.github/workflows/build-template.yml@v1
+    with:
+      release_branch: main

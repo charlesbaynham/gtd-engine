@@ -81,14 +81,35 @@ def _snapshot(vault: Path) -> dict[Path, bytes]:
     return {p.relative_to(vault): p.read_bytes() for p in vault.rglob("*") if p.is_file()}
 
 
-def test_migrate_moves_deployment_nix_and_deletes_old_files(tmp_path: Path) -> None:
+def test_migrate_deletes_the_vendored_engine(tmp_path: Path) -> None:
     vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9)
     migrate(vault)
 
     assert not (vault / ".gtd").exists()
     assert not (vault / "flake.nix").exists()
     assert not (vault / "flake.lock").exists()
-    assert (vault / "deployment.nix").read_text(encoding="utf-8") == _DEPLOYMENT_NIX
+
+
+def test_migrate_drops_the_vaults_own_lxc_build(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The engine publishes one generic template now, configured from
+    /data/config.env — a vault neither builds nor configures an image."""
+    vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9)
+    migrate(vault)
+
+    assert not (vault / ".github" / "workflows" / "lxc-template.yml").exists()
+    assert not (vault / "deployment.nix").exists()
+    err = capsys.readouterr().err
+    assert "/data/config.env" in err
+    assert "https://example.com/repo.git" in err
+
+
+def test_migrate_drops_an_already_migrated_lxc_build(tmp_path: Path) -> None:
+    vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, with_deployment_nix=False)
+    (vault / "deployment.nix").write_text(_DEPLOYMENT_NIX, encoding="utf-8")
+    migrate(vault)
+
+    assert not (vault / "deployment.nix").exists()
+    assert not (vault / ".github" / "workflows" / "lxc-template.yml").exists()
 
 
 def test_migrate_writes_thin_callers_and_keeps_prune_storage(tmp_path: Path) -> None:
@@ -98,15 +119,13 @@ def test_migrate_writes_thin_callers_and_keeps_prune_storage(tmp_path: Path) -> 
     workflows = vault / ".github" / "workflows"
     nightly = (workflows / "nightly-maintenance.yml").read_text(encoding="utf-8")
     assert "uses: charlesbaynham/gtd-engine/.github/workflows/nightly-maintenance.yml@v1" in nightly
-    lxc = (workflows / "lxc-template.yml").read_text(encoding="utf-8")
-    assert "uses: charlesbaynham/gtd-engine/.github/workflows/lxc-template.yml@v1" in lxc
     remarkable = (workflows / "remarkable.yml").read_text(encoding="utf-8")
     assert "uses: charlesbaynham/gtd-engine/.github/workflows/remarkable.yml@v1" in remarkable
     # prune-storage.yml is not part of the split; migrate must not touch it.
     assert (workflows / "prune-storage.yml").read_text(encoding="utf-8") == _PRUNE_STORAGE_YML
 
 
-def test_migrate_skips_remarkable_and_lxc_without_signal(tmp_path: Path) -> None:
+def test_migrate_skips_remarkable_without_signal(tmp_path: Path) -> None:
     vault = _build_vault(
         tmp_path, claude_md=_CLAUDE_WITH_SECTION_9,
         gitlab_mentions_rmapi=False, with_deployment_nix=False, with_old_lxc=False,
@@ -116,13 +135,6 @@ def test_migrate_skips_remarkable_and_lxc_without_signal(tmp_path: Path) -> None
     workflows = vault / ".github" / "workflows"
     assert not (workflows / "remarkable.yml").exists()
     assert not (workflows / "lxc-template.yml").exists()
-
-
-def test_migrate_keeps_lxc_that_existed_without_deployment_nix(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, with_deployment_nix=False)
-    migrate(vault)
-    assert "gtd-engine/.github/workflows/lxc-template.yml@v1" in (vault / ".github" / "workflows" / "lxc-template.yml").read_text(encoding="utf-8")
-    assert "no deployment.nix found" in capsys.readouterr().err
 
 
 def test_migrate_gitlab_hosted_vault_gets_no_github_nightly(tmp_path: Path) -> None:

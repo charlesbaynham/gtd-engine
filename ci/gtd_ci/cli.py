@@ -165,7 +165,7 @@ def cmd_refresh_docs(args: argparse.Namespace) -> None:
 
 def cmd_migrate(args: argparse.Namespace) -> None:
     try:
-        migrate_mod.migrate(Path(args.vault), dry_run=args.dry_run, remarkable=args.remarkable, lxc=args.lxc)
+        migrate_mod.migrate(Path(args.vault), dry_run=args.dry_run, remarkable=args.remarkable)
     except NotADirectoryError:
         print(f"error: not a vault directory: {args.vault}", file=sys.stderr)
         sys.exit(1)
@@ -199,7 +199,6 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser.add_argument("--vault", default=".")
     migrate_parser.add_argument("--dry-run", action="store_true")
     migrate_parser.add_argument("--remarkable", action="store_true")
-    migrate_parser.add_argument("--lxc", action="store_true")
     migrate_parser.set_defaults(func=cmd_migrate)
 
     return parser
