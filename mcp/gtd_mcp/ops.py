@@ -42,6 +42,8 @@ __all__ = [
     "delete",
     "create_project",
     "add_project_action",
+    "append_project_note",
+    "set_project_goal",
     "tick_project_action",
     "archive_project",
     "run_maintenance",
@@ -230,11 +232,21 @@ def _append_or_fill_item(lines: list[str], text: str) -> list[str]:
     return lines
 
 
-def _add_item_to_project(page: projectsmod.ProjectPage, text: str) -> None:
-    page.lines = _append_or_fill_item(page.lines, text)
+def _reparse_project(page: projectsmod.ProjectPage) -> None:
+    """Re-derive the Next Actions bounds and items from `page.lines`, after an
+    edit that may have shifted them."""
     page.heading_index = projectsmod.find_next_actions_heading(page.lines)
+    if page.heading_index is None:
+        page.section_end = len(page.lines)
+        page.items = []
+        return
     page.section_end = projectsmod.section_bounds(page.lines, page.heading_index)
     page.items = projectsmod.parse_items(page.lines, page.heading_index + 1, page.section_end)
+
+
+def _add_item_to_project(page: projectsmod.ProjectPage, text: str) -> None:
+    page.lines = _append_or_fill_item(page.lines, text)
+    _reparse_project(page)
 
 
 def _tick_item(page: projectsmod.ProjectPage, item: projectsmod.ProjectItem) -> None:
@@ -747,6 +759,140 @@ def add_project_action(vault: Vault, today: date, *, project: str, text: str) ->
     _add_item_to_project(page, text_v)
     mark_dirty(vault, relpath)
     return OpResult(f'Added "{text_v}" to {stem}', set(vault.dirty))
+
+
+_DATE_SUBHEADING = re.compile(r"^###\s+(\d{4}-\d{2}-\d{2})\s*$")
+_BLOCK_HEADING = re.compile(r"^#{1,2}\s")
+
+DEFAULT_NOTE_HEADING = "Notes"
+
+
+def _last_date_subheading(lines: list[str], start: int, end: int) -> str | None:
+    for i in range(end - 1, start - 1, -1):
+        m = _DATE_SUBHEADING.match(lines[i].strip())
+        if m:
+            return m.group(1)
+    return None
+
+
+def _append_note(lines: list[str], heading: str, body: list[str], stamp: str | None) -> tuple[list[str], bool]:
+    """Append `body` to the level-2 section named `heading`, creating it at end
+    of file if absent. Returns `(lines, created_section)`.
+
+    A section is bounded by the next level-1/2 heading (FORMAT.md §6), so
+    writing at the end of one — or adding a new one after the last — never
+    reaches inside any other, `## Next Actions` included.
+    """
+    lines = list(lines)
+    idx = projectsmod.find_heading(lines, heading, level=2)
+    if idx is None:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        block = [f"## {heading}", ""]
+        if stamp:
+            block += [f"### {stamp}", ""]
+        return lines + block + body, True
+
+    end = projectsmod.section_bounds(lines, idx)
+    insert_at = end
+    while insert_at > idx + 1 and lines[insert_at - 1].strip() == "":
+        insert_at -= 1
+
+    block = [""]
+    # One date subheading per day: a second note on the same day joins the one
+    # already open rather than opening an identical sibling.
+    if stamp and _last_date_subheading(lines, idx + 1, insert_at) != stamp:
+        block += [f"### {stamp}", ""]
+    lines[insert_at:insert_at] = block + body
+    return lines, False
+
+
+def append_project_note(
+    vault: Vault,
+    today: date,
+    *,
+    project: str,
+    text: str,
+    heading: str = DEFAULT_NOTE_HEADING,
+    dated: bool = True,
+) -> OpResult:
+    """Append free prose to a project page, outside its Next Actions section.
+
+    This is the write path for project *context* — a design decision, what was
+    agreed in a conversation — as opposed to `add_project_action`, which is
+    for work. `heading` names the level-2 section it lands in (`## Notes` by
+    convention, §6); the section is created at end of file when absent.
+    `dated` prefixes the note with a `### <today>` subheading, once per day.
+    """
+    stem = resolve_project_stem(vault, project)
+    page, relpath = _find_loaded_project(vault, stem)
+
+    heading_v = heading.strip().lstrip("#").strip()
+    if not heading_v:
+        raise OpError("append_project_note: heading must not be blank")
+    if "\n" in heading_v:
+        raise OpError("append_project_note: heading must be a single line")
+    if heading_v.lower() == "next actions":
+        raise OpError("append_project_note: '## Next Actions' holds actions, not notes; use add_project_action")
+
+    body = [line.rstrip() for line in text.strip("\n").split("\n")]
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    if not body:
+        raise OpError("append_project_note: text must not be blank")
+    for line in body:
+        if _BLOCK_HEADING.match(line.strip()):
+            raise OpError(
+                f"append_project_note: note text may not contain a level-1/2 heading ({line.strip()!r}) — "
+                "it would end the section it is written into; use ### or deeper"
+            )
+
+    stamp = today.isoformat() if dated else None
+    page.lines, created = _append_note(page.lines, heading_v, body, stamp)
+    _reparse_project(page)
+    mark_dirty(vault, relpath)
+    return OpResult(
+        f'Appended a note to "{stem}" under "## {heading_v}"',
+        set(vault.dirty),
+        {"heading": heading_v, "created_section": created, "dated": stamp},
+    )
+
+
+def set_project_goal(vault: Vault, today: date, *, project: str, goal: str) -> OpResult:
+    """Rewrite the paragraph under `# Goal` (§6), so a goal set at creation
+    can be corrected later."""
+    stem = resolve_project_stem(vault, project)
+    page, relpath = _find_loaded_project(vault, stem)
+
+    body = [line.rstrip() for line in goal.strip("\n").split("\n")]
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    if not body:
+        raise OpError("set_project_goal: goal must not be blank")
+    for line in body:
+        if line.strip().startswith("#"):
+            raise OpError(f"set_project_goal: goal may not contain a heading ({line.strip()!r})")
+
+    bounds = projectsmod.goal_paragraph(page.lines)
+    if bounds is None:
+        raise OpError(f"set_project_goal: {relpath} has no '# Goal' heading")
+    start, end = bounds
+    previous = "\n".join(page.lines[start:end]).strip() or None
+    # An empty Goal section inserts before whatever follows, so the new
+    # paragraph needs its own blank line to stay a paragraph.
+    separator = [""] if start == end and start < len(page.lines) else []
+    page.lines[start:end] = body + separator
+    _reparse_project(page)
+    mark_dirty(vault, relpath)
+    return OpResult(
+        f'Set the goal of "{stem}"',
+        set(vault.dirty),
+        {"previous_goal": previous, "goal": "\n".join(body)},
+    )
 
 
 def tick_project_action(vault: Vault, today: date, *, handle: str) -> OpResult:

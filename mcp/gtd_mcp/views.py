@@ -167,17 +167,14 @@ def tickler(vault: Vault, bucket: str | None = None) -> list[dict[str, Any]]:
     return out
 
 
-def project(vault: Vault, page: projectsmod.ProjectPage, relpath: str) -> dict[str, Any]:
+def project(
+    vault: Vault, page: projectsmod.ProjectPage, relpath: str, include_body: bool = False
+) -> dict[str, Any]:
     goal = None
-    for i, line in enumerate(page.lines):
-        if re.match(r"^#\s+Goal\s*$", line.strip()):
-            for cand in page.lines[i + 1 :]:
-                if cand.strip():
-                    if cand.strip().startswith("#"):
-                        break
-                    goal = cand.strip()
-                    break
-            break
+    bounds = projectsmod.goal_paragraph(page.lines)
+    if bounds is not None:
+        start, end = bounds
+        goal = "\n".join(line.strip() for line in page.lines[start:end]) or None
 
     status_lines: list[str] = []
     for i, line in enumerate(page.lines):
@@ -226,11 +223,14 @@ def project(vault: Vault, page: projectsmod.ProjectPage, relpath: str) -> dict[s
         "row": row_handle,
         "done": "Done" in relpath.split("/"),
         "surfaced_in": surfaced_in,
+        # The whole page verbatim, for an editing caller that would otherwise
+        # have to guess at the text outside Next Actions (issue #3).
+        "body": "\n".join(page.lines) if include_body else None,
     }
 
 
-def projects(vault: Vault, include_done: bool = False) -> list[dict[str, Any]]:
-    out = [project(vault, page, relpath) for relpath, page in vault.projects.items()]
+def projects(vault: Vault, include_done: bool = False, include_body: bool = False) -> list[dict[str, Any]]:
+    out = [project(vault, page, relpath, include_body) for relpath, page in vault.projects.items()]
     if include_done:
         # vault.projects never holds Done/ pages (model.load_vault skips them);
         # load them directly, same rules (must carry '## Next Actions').
@@ -242,13 +242,13 @@ def projects(vault: Vault, include_done: bool = False) -> list[dict[str, Any]]:
                 except Exception:  # a broken Done/ page shouldn't break the listing
                     continue
                 if page is not None:
-                    out.append(project(vault, page, str(path.relative_to(vault.root))))
+                    out.append(project(vault, page, str(path.relative_to(vault.root)), include_body))
     return sorted(out, key=lambda p: p["stem"].lower())
 
 
-def get_project(vault: Vault, name: str) -> dict[str, Any] | None:
+def get_project(vault: Vault, name: str, include_body: bool = False) -> dict[str, Any] | None:
     target = name.strip().lower()
-    for p in projects(vault, include_done=True):
+    for p in projects(vault, include_done=True, include_body=include_body):
         if p["stem"].lower() == target:
             return p
     return None

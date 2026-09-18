@@ -49,7 +49,8 @@ tomorrow's brief or maintenance run will do.
 
 **Write:** `capture`, `add_next_action`, `delegate`, `schedule`,
 `add_to_tickler`, `triage`, `complete`, `update`, `delete`, `create_project`,
-`add_project_action`, `tick_project_action`, `archive_project`.
+`add_project_action`, `append_project_note`, `set_project_goal`,
+`tick_project_action`, `archive_project`.
 
 **Housekeeping:** `run_maintenance`.
 
@@ -58,6 +59,16 @@ always sets a Chase by: a row without one never resurfaces, so an omitted
 `chase_by` defaults to today + 7 days, and `update` cannot blank it. When the
 default is used the payload carries `chase_by_defaulted` and a `warning`, so
 the caller can replace it with a date that actually fits.
+
+Project pages hold prose as well as actions. `append_project_note` writes it
+— a decision, the shape of a design, whatever a conversation settled — to a
+named level-2 section (`## Notes` by default), dated with a `### <today>`
+subheading unless `dated=False`, and never inside `## Next Actions`;
+`set_project_goal` rewrites the paragraph under `# Goal`; and
+`get_project(include_body=True)` returns the page verbatim, so an edit is
+made against the real text rather than a guess at it. Together they close
+the gap that used to send project context around the MCP and straight at the
+git remote.
 
 Every write tool takes `dry_run: bool = False` and returns
 `{ok, summary, commit, diff, stale, error, ...payload}` — `diff` is populated

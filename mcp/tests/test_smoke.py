@@ -34,7 +34,8 @@ def test_server_lists_tools_and_answers_get_brief(tmp_path: Path) -> None:
         "list_tickler", "list_projects", "get_project", "search", "lint",
         "capture", "add_next_action", "delegate", "schedule", "add_to_tickler",
         "triage", "complete", "update", "delete", "create_project",
-        "add_project_action", "tick_project_action", "archive_project", "run_maintenance",
+        "add_project_action", "append_project_note", "set_project_goal",
+        "tick_project_action", "archive_project", "run_maintenance",
     ]:
         assert expected in names, f"tool {expected!r} missing"
 

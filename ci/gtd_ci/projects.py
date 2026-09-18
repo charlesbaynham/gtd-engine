@@ -42,16 +42,46 @@ def is_project_dir(path: Path, root: Path) -> bool:
     return path.name != "-Project template.md"
 
 
-def find_next_actions_heading(lines: list[str]) -> int | None:
+def find_heading(lines: list[str], title: str, level: int = 2) -> int | None:
+    """Index of the first heading of `level` whose text equals `title`
+    (trimmed, case-insensitive), or None."""
+    want = title.strip().lower()
     for i, line in enumerate(lines):
         m = _HEADING.match(line.strip())
-        if m and m.group(2).strip().lower() == "next actions" and len(m.group(1)) == 2:
+        if m and len(m.group(1)) == level and m.group(2).strip().lower() == want:
             return i
     return None
 
 
+def find_next_actions_heading(lines: list[str]) -> int | None:
+    return find_heading(lines, "Next Actions", level=2)
+
+
+def goal_paragraph(lines: list[str]) -> tuple[int, int] | None:
+    """(start, end) line indices of the paragraph under `# Goal` (§6).
+
+    `end` is exclusive; `start == end` means the heading is there but carries
+    no prose yet, and names the line prose would be inserted at (past the
+    blank line the heading is usually followed by). Returns None when the
+    page has no `# Goal` heading at all.
+    """
+    idx = find_heading(lines, "Goal", level=1)
+    if idx is None:
+        return None
+    i = idx + 1
+    while i < len(lines) and lines[i].strip() == "":
+        i += 1
+    if i >= len(lines) or lines[i].strip().startswith("#"):
+        return i, i
+    start = i
+    while i < len(lines) and lines[i].strip() != "" and not lines[i].strip().startswith("#"):
+        i += 1
+    return start, i
+
+
 def section_bounds(lines: list[str], heading_index: int) -> int:
-    """End (exclusive) of the Next Actions section: next level-1/2 heading, or EOF."""
+    """End (exclusive) of the section opened at `heading_index`: the next
+    level-1/2 heading, or EOF (§6, same bound for every level-2 section)."""
     for i in range(heading_index + 1, len(lines)):
         m = _HEADING.match(lines[i].strip())
         if m and len(m.group(1)) in (1, 2):
