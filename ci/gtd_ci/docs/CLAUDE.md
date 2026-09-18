@@ -124,6 +124,12 @@ add the same text as a checkbox on the project page and link the row to it.
 `Project details/<Name>.md`, write the goal, add the first action as a
 checkbox, then add the matching row to `Next actions.md`.
 
+**Record project context.** Notes about a project — a decision, a design, what
+a conversation settled — go under `## Notes` on its page, after the
+`## Next Actions` section, with a `### <YYYY-MM-DD>` subheading per day. Never
+inside `## Next Actions`: everything there is an action. Automation only ever
+appends to prose, so a note is safe from the nightly job.
+
 **Mark something done.** Tick the checkbox on the project page *and* remove the
 row from `Next actions.md`. A standalone action with no project: just remove
 the row. When a project is finished, **move** the file to

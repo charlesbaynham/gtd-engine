@@ -1,0 +1,9 @@
+today: 2026-09-10
+op: append_project_note
+args:
+  project: "Sample"
+  text: "Agreed with Tom: he takes the cryostat, I take the clock."
+expect:
+  heading: "Notes"
+  created_section: false
+  dated: "2026-09-10"

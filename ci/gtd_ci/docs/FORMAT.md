@@ -251,7 +251,18 @@ level 1 or 2, or end of file. Its **items** are the lines in that section
 matching `^[-*] \[( |x|X)\] (.*)$` — top-level only; indented lines are notes
 and never items. `[ ]` is unchecked; `[x]`/`[X]` is checked. Item text is
 group 2, trimmed. Item order is priority order; the first unchecked item is
-the project's current next action.
+the project's current next action. A line outside the section is never an
+item, whatever it looks like: a checkbox line under another heading is prose.
+
+The rest of the page is **free prose**, and automation only ever appends to
+it. Every other level-2 section is bounded the same way (heading to the next
+level-1/2 heading, or EOF), so a section written after `## Next Actions`
+cannot reach inside it. `## Notes` is the conventional heading for prose a
+tool writes — project context, a decision, what a conversation settled — and
+a note may carry a `### <YYYY-MM-DD>` subheading to date it. Both are
+conventions, not structure: no job reads either, a level-3 heading never
+bounds a section, and a wiki link or checkbox inside prose is not a project
+link or an item.
 
 A project page's next action **should** have a row in `Next actions.md` whose
 Project cell resolves to it. The row's Action text should equal an unchecked
@@ -275,6 +286,20 @@ Writes to project pages:
 - **Appending** an item adds `- [ ] <text>` as the last line of the Next
   Actions section (after its last non-blank line). If the heading is absent,
   `## Next Actions` is appended at end of file preceded by one blank line.
+
+- **Appending a note** adds prose after the last non-blank line of a named
+  level-2 section (`## Notes` by convention), separated from it by one blank
+  line. If that heading is absent, it is appended at end of file preceded by
+  one blank line. A dated note is preceded by `### <today>` and a blank
+  line, at most once per date per section: a second note on the same day
+  joins the subheading already there. The note text is written verbatim and
+  may not contain a level-1 or level-2 heading, which would end the section
+  it is written into. `## Next Actions` is never a note target.
+
+- **Setting the goal** replaces the paragraph under `# Goal` — the run of
+  non-blank, non-heading lines after it — with the new text, leaving the
+  surrounding blank lines as they were. A `# Goal` heading with no prose
+  under it gains the paragraph, followed by a blank line.
 
 - **Promoting** an item to a project copies
   `Project details/-Project template.md` (basename configurable in the

@@ -164,9 +164,13 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
         return do_read(ctx, lambda vault: views.projects(vault, include_done))
 
     @mcp.tool()
-    def get_project(ctx: Context, name: str) -> dict | None:
-        """One project page by stem (filename without .md), active or done."""
-        return do_read(ctx, lambda vault: views.get_project(vault, name))
+    def get_project(ctx: Context, name: str, include_body: bool = False) -> dict | None:
+        """One project page by stem (filename without .md), active or done.
+        Set `include_body` to also get `body`: the page's full text verbatim,
+        including everything outside '## Next Actions' — the notes, the
+        status bullets, whatever else the page carries. Ask for it before
+        editing prose, so an edit is made against the real text."""
+        return do_read(ctx, lambda vault: views.get_project(vault, name, include_body))
 
     @mcp.tool()
     def search(ctx: Context, query: str, kinds: list[str] | None = None) -> dict:
@@ -412,6 +416,33 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
         §6 Appending): fills an empty placeholder item if one is present,
         otherwise adds it as the section's last line."""
         return do_write(ctx, opsmod.add_project_action, dry_run, project=project, text=text)
+
+    @mcp.tool()
+    def append_project_note(
+        ctx: Context,
+        project: str,
+        text: str,
+        heading: str = opsmod.DEFAULT_NOTE_HEADING,
+        dated: bool = True,
+        dry_run: bool = False,
+    ) -> dict:
+        """Append free prose to a project page — a design decision, what a
+        conversation settled, context that is not a task. `text` lands at the
+        end of the level-2 section named `heading` ('Notes' by default,
+        FORMAT.md §6), which is created at end of file if the page has none;
+        `## Next Actions` and everything in it are never touched (use
+        `add_project_action` for work). `dated` prefixes the note with a
+        `### <today>` subheading, at most one per day per section. Markdown
+        in `text` is written verbatim, except that a level-1/2 heading is
+        refused: it would end the section the note is written into."""
+        return do_write(ctx, opsmod.append_project_note, dry_run, project=project, text=text, heading=heading, dated=dated)
+
+    @mcp.tool()
+    def set_project_goal(ctx: Context, project: str, goal: str, dry_run: bool = False) -> dict:
+        """Rewrite the paragraph under a project page's '# Goal' heading, so
+        a goal given at creation can be corrected later. The previous text
+        comes back in the payload as `previous_goal`."""
+        return do_write(ctx, opsmod.set_project_goal, dry_run, project=project, goal=goal)
 
     @mcp.tool()
     def tick_project_action(ctx: Context, handle: str, dry_run: bool = False) -> dict:

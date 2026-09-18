@@ -1,0 +1,8 @@
+today: 2026-09-10
+op: set_project_goal
+args:
+  project: "Sample"
+  goal: "Ship the sample, on the new rig."
+expect:
+  previous_goal: "Ship the sample."
+  goal: "Ship the sample, on the new rig."

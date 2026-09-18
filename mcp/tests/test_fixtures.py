@@ -27,7 +27,8 @@ _OPS = {
     for name in [
         "capture", "add_next_action", "delegate", "schedule", "add_to_tickler",
         "triage", "complete", "update", "delete", "create_project",
-        "add_project_action", "tick_project_action", "archive_project", "run_maintenance",
+        "add_project_action", "append_project_note", "set_project_goal",
+        "tick_project_action", "archive_project", "run_maintenance",
     ]
 }
 

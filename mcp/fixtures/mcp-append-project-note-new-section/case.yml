@@ -1,0 +1,14 @@
+today: 2026-09-10
+op: append_project_note
+args:
+  project: "Sample"
+  text: |-
+    Two decisions from today:
+
+    - the simulation runs on a single ion
+    - the Nix env is pinned to nixos-26.05
+  dated: false
+expect:
+  heading: "Notes"
+  created_section: true
+  dated: null
