@@ -11,7 +11,9 @@ ci/          gtd_ci        — parsing, rewriting, the five nightly jobs
 mcp/         gtd_mcp        — MCP server, built on gtd_ci
 remarkable/  gtd_remarkable — reMarkable round-trip, built on gtd_ci + gtd_mcp
 fixtures/    shared input/expected cases, read by ci/tests and the Obsidian plugin
-nix/         gtd-mcp.nix, cattle.nix, the Proxmox LXC template
+nix/         gtd-mcp.nix, cattle.nix, the Proxmox LXC template this repo
+             builds and releases (generic — a deployment configures it from
+             /data/config.env, see nix/README.md)
 .github/workflows/  the engine's own CI, plus the reusable workflows vaults call
 gitlab/      the GitLab equivalent of the reusable workflows
 ```

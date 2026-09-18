@@ -6,6 +6,10 @@
 # local-only server that needs no secrets at all. `./cattle.nix` layers the
 # Proxmox LXC specifics on top of this; a NixOS box, VM or container can
 # import this module on its own.
+#
+# The settings that vary between deployments rather than between images are
+# also settable at runtime, from `configFile` — which is what lets ONE
+# published image serve any vault, configured entirely from its state volume.
 { config, lib, pkgs, ... }:
 
 let
@@ -23,21 +27,43 @@ let
   '';
 
   # The contract: refuse to start rather than come up insecure or broken.
-  # Values are already in the environment via EnvironmentFile by the time
-  # this runs. Only the variables this configuration actually depends on are
-  # checked, so a local-only server has nothing to seed.
-  checkSecretsScript = pkgs.writeShellScript "gtd-mcp-check-secrets" ''
+  # The list is read from the environment, not baked in, so a deployment that
+  # supplies its settings at runtime can say what it depends on at runtime too
+  # — and a local-only server, whose list is empty, has nothing to seed.
+  checkRequiredScript = pkgs.writeShellScript "gtd-mcp-check-required" ''
     set -eu
-    for var in ${lib.concatStringsSep " " cfg.requiredSecrets}; do
-      val="$(eval printf '%s' "\$$var")"
+    for var in ''${GTD_REQUIRED_VARS:-}; do
+      # ''${$var:-} rather than $$var: an unseeded variable must produce the
+      # message below, not bash's "unbound variable" under set -u.
+      val="$(eval printf '%s' "\''${$var:-}")"
       if [ -z "$val" ] || [ "$val" = "CHANGEME" ]; then
-        echo "gtd-mcp: $var is missing or still a placeholder${
-          lib.optionalString (cfg.environmentFile != null) " in ${cfg.environmentFile}"
-        }" >&2
+        echo "gtd-mcp: $var is missing or still a placeholder${seedHint}" >&2
         exit 1
       fi
     done
   '';
+
+  seedHint = lib.optionalString (seedFiles != [ ])
+    " in ${lib.concatStringsSep " or " seedFiles}";
+  seedFiles = lib.filter (f: f != null) [ cfg.environmentFile cfg.configFile ];
+
+  # systemd reads EnvironmentFile= in the order given and a later file wins,
+  # so this is a three-layer environment: the image's settings, the secrets,
+  # then the deployment's own file on its state volume. Everything variable
+  # goes through a file rather than Environment= precisely so that ordering is
+  # the documented one and a deployment can always have the last word.
+  defaultsFile = pkgs.writeText "gtd-mcp-defaults.env" (lib.concatStrings
+    (lib.mapAttrsToList (k: v: "${k}=\"${lib.escape [ "\\" "\"" ] v}\"\n") defaults));
+
+  defaults = {
+    GTD_REMOTE_URL = lib.optionalString (cfg.remoteUrl != null) cfg.remoteUrl;
+    GTD_BRANCH = cfg.branch;
+    GTD_ALLOWED_USERS = lib.concatStringsSep "," cfg.allowedUsers;
+    GTD_POLL_SECONDS = toString cfg.pollSeconds;
+    GTD_GIT_NAME = cfg.gitName;
+    GTD_GIT_EMAIL = cfg.gitEmail;
+    GTD_REQUIRED_VARS = lib.concatStringsSep " " cfg.requiredVars;
+  } // cfg.extraEnvironment;
 in
 {
   options.services.gtd-mcp = {
@@ -143,7 +169,25 @@ in
       '';
     };
 
-    requiredSecrets = lib.mkOption {
+    configFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/data/config.env";
+      description = ''
+        Path to a KEY=value file holding this deployment's own settings —
+        GTD_REMOTE_URL, GTD_BRANCH, GTD_ALLOWED_USERS, GTD_REQUIRED_VARS — read
+        after everything above and therefore winning over it. It holds no
+        secrets and needs no particular mode; it exists so that a deployment
+        can be configured where its state lives rather than inside its image,
+        which is what lets one published image serve any vault.
+
+        A path that does not exist fails the unit, deliberately: an image whose
+        configuration went missing must not fall back to the generic defaults
+        it was built with.
+      '';
+    };
+
+    requiredVars = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = lib.optionals (cfg.remoteUrl != null) [ "GTD_PUSH_TOKEN" ];
       defaultText = lib.literalExpression ''[ "GTD_PUSH_TOKEN" ] when remoteUrl is set, otherwise [ ]'';
@@ -151,6 +195,10 @@ in
         Environment variables the unit refuses to start without. Coming up
         insecure is a worse failure than not coming up, so a value that is
         empty or still "CHANGEME" fails the unit outright.
+
+        Passed to the unit as GTD_REQUIRED_VARS, so configFile can extend or
+        replace the list without rebuilding the image — a deployment that adds
+        the GitLab webhook adds GTD_WEBHOOK_SECRET there.
       '';
     };
 
@@ -175,8 +223,8 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.requiredSecrets == [ ] || cfg.environmentFile != null;
-        message = "services.gtd-mcp: requiredSecrets is non-empty but environmentFile is null, so those values can never be supplied.";
+        assertion = cfg.requiredVars == [ ] || seedFiles != [ ];
+        message = "services.gtd-mcp: requiredVars is non-empty but neither environmentFile nor configFile is set, so those values can never be supplied.";
       }
     ];
 
@@ -206,35 +254,28 @@ in
 
       path = [ pkgs.git ];
 
-      # Non-secret configuration only. GTD_PUSH_TOKEN and GTD_WEBHOOK_SECRET
-      # come from environmentFile — never set here, never in git or an image.
+      # Only the settings the sandbox itself is built around: these name the
+      # paths in ReadWritePaths and the port in the firewall, so they cannot be
+      # retuned from a file without the unit disagreeing with itself.
+      # Everything else is in defaultsFile, where configFile can override it.
       environment = {
         HOME = cfg.stateDir;
         GTD_VAULT_DIR = cfg.vaultDir;
         GTD_MCP_HOST = cfg.host;
         GTD_MCP_PORT = toString cfg.port;
-        GTD_POLL_SECONDS = toString cfg.pollSeconds;
-        GTD_GIT_NAME = cfg.gitName;
-        GTD_GIT_EMAIL = cfg.gitEmail;
-        GTD_BRANCH = cfg.branch;
-      }
-      // lib.optionalAttrs (cfg.remoteUrl != null) { GTD_REMOTE_URL = cfg.remoteUrl; }
-      // lib.optionalAttrs (cfg.allowedUsers != [ ]) {
-        GTD_ALLOWED_USERS = lib.concatStringsSep "," cfg.allowedUsers;
-      }
-      // cfg.extraEnvironment;
+      };
 
       serviceConfig = {
         Type = "simple";
         User = "gtd-mcp";
         Group = "gtd-mcp";
 
-        # A missing file fails the unit outright, which is the "refuses to
-        # start" contract for free.
-        EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
+        # Layered, and the order is the point: image, then secrets, then the
+        # deployment's own file. A missing file fails the unit outright, which
+        # is the "refuses to start" contract for free.
+        EnvironmentFile = [ defaultsFile ] ++ seedFiles;
 
-        ExecStartPre = [ "${gitConfigScript}" ]
-          ++ lib.optional (cfg.requiredSecrets != [ ]) "${checkSecretsScript}";
+        ExecStartPre = [ "${gitConfigScript}" "${checkRequiredScript}" ];
         ExecStart = "${cfg.package}/bin/gtd-mcp serve";
 
         Restart = "on-failure";

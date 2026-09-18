@@ -1,6 +1,11 @@
-# Your deployment's own settings. Copy this file to `deployment.nix` beside it
-# and edit; flake.nix picks it up automatically when it exists, and builds a
-# local-only server that talks to nobody when it does not.
+# Build-time settings, for a fork that deploys exactly one vault and would
+# rather bake them into its own image than seed a file on the machine. Copy
+# this to `deployment.nix` beside it; flake.nix picks it up when it exists.
+#
+# ⚠️ The template this repo publishes is built WITHOUT one, and configured from
+# /data/config.env on the container — see config.env.example, which is the
+# normal path and the one you want unless you are building your own image.
+# config.env is read last, so it overrides anything set here.
 #
 # This file goes in git — it holds no secrets. Tokens live only in the
 # environmentFile on the machine (see README.md, "Secrets").
@@ -18,6 +23,6 @@
 
     # Uncomment if you wire up the GitLab push webhook, so the unit refuses to
     # start with the secret unset rather than silently never syncing on push.
-    # requiredSecrets = [ "GTD_PUSH_TOKEN" "GTD_WEBHOOK_SECRET" ];
+    # requiredVars = [ "GTD_PUSH_TOKEN" "GTD_WEBHOOK_SECRET" ];
   };
 }

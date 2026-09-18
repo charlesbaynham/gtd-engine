@@ -46,21 +46,6 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 """
 
-_LXC_TEMPLATE_YML = """\
-name: Build gtd-mcp LXC template
-on:
-  push:
-    branches: [master, main]
-    paths: [deployment.nix, .github/workflows/lxc-template.yml]
-  workflow_dispatch: {}
-permissions:
-  contents: write
-jobs:
-  lxc-template:
-    if: vars.BUILD_LXC_TEMPLATE == 'true'
-    uses: charlesbaynham/gtd-engine/.github/workflows/lxc-template.yml@v1
-"""
-
 _GITLAB_CI_YML = """\
 include:
   - remote: https://raw.githubusercontent.com/charlesbaynham/gtd-engine/v1/gitlab/vault.gitlab-ci.yml
@@ -106,16 +91,25 @@ def _sync_workflow(path: Path, wanted: bool, content: str, vault: Path, dry_run:
         _delete(path, vault, dry_run)
 
 
-def _move_deployment_nix(vault: Path, dry_run: bool) -> bool:
-    """Returns whether deployment.nix exists at the vault root once this step is done."""
-    src = vault / ".gtd" / "nix" / "deployment.nix"
-    dst = vault / "deployment.nix"
-    if not src.is_file():
-        return dst.is_file()
-    _log("move .gtd/nix/deployment.nix -> deployment.nix")
-    if not dry_run:
-        dst.write_bytes(src.read_bytes())
-    return True
+def _drop_lxc_build(vault: Path, dry_run: bool) -> None:
+    """The engine builds and releases the template itself now, from a generic
+    image a deployment configures from /data/config.env. A vault's own build
+    only ever existed to bake deployment.nix in, so both go."""
+    workflow = vault / ".github" / "workflows" / "lxc-template.yml"
+    deployment = vault / ".gtd" / "nix" / "deployment.nix"
+    if not deployment.is_file():
+        deployment = vault / "deployment.nix"
+    settings = deployment.read_text(encoding="utf-8") if deployment.is_file() else ""
+
+    _delete(workflow, vault, dry_run)
+    _delete(deployment, vault, dry_run)
+    if settings:
+        print(
+            "deployment.nix is gone: its settings now belong in /data/config.env on "
+            "the container, as GTD_REMOTE_URL / GTD_BRANCH / GTD_ALLOWED_USERS. "
+            "See gtd-engine's nix/config.env.example. It held:\n" + settings,
+            file=sys.stderr,
+        )
 
 
 def _mentions_rmapi(path: Path) -> bool:
@@ -130,7 +124,7 @@ def _wants_remarkable(vault: Path, flag: bool) -> bool:
         return True
     return any(
         _mentions_rmapi(p)
-        for p in (vault / ".gitlab-ci.yml", workflows / "nightly-maintenance.yml", workflows / "lxc-template.yml")
+        for p in (vault / ".gitlab-ci.yml", workflows / "nightly-maintenance.yml")
     )
 
 
@@ -177,7 +171,7 @@ def _ensure_gitignore(vault: Path, dry_run: bool) -> None:
     path.write_text("\n".join(lines + missing) + "\n", encoding="utf-8")
 
 
-def migrate(vault: Path, dry_run: bool = False, remarkable: bool = False, lxc: bool = False) -> None:
+def migrate(vault: Path, dry_run: bool = False, remarkable: bool = False) -> None:
     if not vault.is_dir():
         raise NotADirectoryError(vault)
 
@@ -186,27 +180,19 @@ def migrate(vault: Path, dry_run: bool = False, remarkable: bool = False, lxc: b
     # and the GitHub reMarkable caller only makes sense after a GitHub nightly.
     wants_nightly = (workflows / "nightly-maintenance.yml").is_file() or not (vault / ".gitlab-ci.yml").is_file()
     wants_remarkable = wants_nightly and _wants_remarkable(vault, remarkable)
-    had_lxc = (workflows / "lxc-template.yml").is_file()
 
-    deployment_exists = _move_deployment_nix(vault, dry_run)
+    _drop_lxc_build(vault, dry_run)
     _delete(vault / ".gtd", vault, dry_run)
     _delete(vault / "flake.nix", vault, dry_run)
     _delete(vault / "flake.lock", vault, dry_run)
 
     # Old thick versions (vendored) and stale thin callers (no longer wanted)
     # are both handled by _sync_workflow, so an already-migrated vault sees no
-    # further changes and one whose reMarkable/LXC setup was removed does.
+    # further changes and one whose reMarkable setup was removed does.
     # prune-storage.yml is untouched: it already calls nix-proxmox-cattle
     # directly and owns nothing this migration changes.
     _sync_workflow(workflows / "nightly-maintenance.yml", wants_nightly, _NIGHTLY_MAINTENANCE_YML, vault, dry_run)
     _sync_workflow(workflows / "remarkable.yml", wants_remarkable, _REMARKABLE_YML, vault, dry_run)
-    _sync_workflow(workflows / "lxc-template.yml", lxc or deployment_exists or had_lxc, _LXC_TEMPLATE_YML, vault, dry_run)
-    if had_lxc and not deployment_exists:
-        print(
-            "lxc-template.yml kept but no deployment.nix found; create one from "
-            "deployment.nix.example or the template will build a local-only server",
-            file=sys.stderr,
-        )
 
     gitlab_ci = vault / ".gitlab-ci.yml"
     if gitlab_ci.is_file():

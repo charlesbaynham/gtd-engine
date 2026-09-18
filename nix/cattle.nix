@@ -4,7 +4,10 @@
 # template output in flake.nix — a plain NixOS host never sees this file.
 #
 # All mkDefault, so ./deployment.nix (yours, if you made one) overrides any of
-# it without fuss.
+# it without fuss — but the published image is built without one, and is
+# configured from /data/config.env on the container instead. That is what makes
+# it generic: the same image serves any vault, and changing which vault it
+# serves is a file on the state volume rather than a rebuild.
 { lib, ... }:
 {
   services.gtd-mcp = {
@@ -15,6 +18,18 @@
 
     # Seeded out of band, mode 0600, never in git and never in the image.
     environmentFile = lib.mkDefault "/data/secrets/gtd-mcp.env";
+
+    # This deployment's own settings: which vault, which branch, who may call
+    # it. See config.env.example.
+    configFile = lib.mkDefault "/data/config.env";
+
+    # Fail closed. A container reachable by other machines, holding a clone it
+    # pushes back to, must not come up with no vault and no caller check just
+    # because its state volume was never seeded — and a deploy that lands a
+    # container in that state should roll back, which a unit that refuses to
+    # start is what causes. A deployment needing more (the webhook secret, say)
+    # extends the list in config.env.
+    requiredVars = lib.mkDefault [ "GTD_REMOTE_URL" "GTD_PUSH_TOKEN" "GTD_ALLOWED_USERS" ];
 
     # The container is reached from other machines on the LAN; its security
     # border is the router in front of it, not its own firewall.
