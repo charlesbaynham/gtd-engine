@@ -82,3 +82,6 @@ def test_stale_sheets():
     names = ["20260911Z0330_gtd_sheet", "20260912Z0330_gtd_sheet", "20260915Z0330_gtd_sheet", "notes"]
     assert stale_sheets(names, date(2026, 9, 15), 3) == ["20260911Z0330_gtd_sheet"]
     assert stale_sheets(names, date(2026, 9, 15), 0) == []
+    # A sheet archived in this very run is never deleted in the same run, even
+    # when the date in its name is already past the cutoff.
+    assert stale_sheets(names, date(2026, 9, 15), 3, {"20260911Z0330_gtd_sheet"}) == []

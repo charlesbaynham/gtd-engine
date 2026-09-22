@@ -8,6 +8,7 @@ import json
 import shutil
 import stat
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -68,11 +69,38 @@ def _fake_rmapi(tmp_path: Path, monkeypatch, device: Path) -> Path:
     return log
 
 
-def _pack_rmdoc(pdf: Path, out: Path) -> None:
-    """A minimal .rmdoc: the untouched PDF plus a .content (no strokes)."""
+def _pack_rmdoc(pdf: Path, out: Path, *, strokes: bool = False) -> None:
+    """A minimal .rmdoc: the untouched PDF plus a .content.
+
+    With ``strokes=True`` a real v6 ``.rm`` layer holding one line is written
+    for page 0, which is what makes the sheet look written-on to `process`.
+    """
     with zipfile.ZipFile(out, "w") as z:
-        z.writestr("doc-uuid.content", json.dumps({"cPages": {"pages": []}}))
+        pages = [{"id": "page-uuid", "redir": {"value": 0}}] if strokes else []
+        z.writestr("doc-uuid.content", json.dumps({"cPages": {"pages": pages}}))
         z.write(pdf, "doc-uuid.pdf")
+        if strokes:
+            z.writestr("doc-uuid/page-uuid.rm", _one_stroke_rm())
+
+
+def _one_stroke_rm() -> bytes:
+    """A v6 ``.rm`` file with a single short line, built with rmscene."""
+    from rmscene import CrdtId, CrdtSequenceItem, SceneLineItemBlock, write_blocks
+    from rmscene.scene_items import Line, Pen, PenColor, Point
+
+    line = Line(
+        color=PenColor.BLACK,
+        tool=Pen.FINELINER_1,
+        points=[Point(x=x, y=0.0, speed=1, direction=0, width=10, pressure=100) for x in (0.0, 20.0)],
+        thickness_scale=1.0,
+        starting_length=0.0,
+    )
+    item = CrdtSequenceItem(
+        item_id=CrdtId(1, 10), left_id=CrdtId(0, 0), right_id=CrdtId(0, 0), deleted_length=0, value=line
+    )
+    buf = BytesIO()
+    write_blocks(buf, [SceneLineItemBlock(parent_id=CrdtId(0, 1), item=item)])
+    return buf.getvalue()
 
 
 def test_process_then_publish(vault_root, tmp_path, monkeypatch):
@@ -81,9 +109,10 @@ def test_process_then_publish(vault_root, tmp_path, monkeypatch):
     log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
     work = tmp_path / "work"
 
-    # Yesterday's sheet: rendered from the vault, "on the device", unannotated.
+    # Yesterday's sheet: rendered from the vault, "on the device", written on
+    # (no ticks land, but the ink is what makes it a sheet we are finished with).
     assert main(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
-    _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc")
+    _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc", strokes=True)
     # Older sheets already in the archive: one inside the 3-day window, one outside.
     (device / "Archive").mkdir()
     _pack_rmdoc(work / "y.pdf", device / "Archive" / "20260912Z0330_gtd_sheet.rmdoc")
@@ -95,14 +124,14 @@ def test_process_then_publish(vault_root, tmp_path, monkeypatch):
                "--ocr", "null", "--commit-message-file", str(msg)])
     assert rc == 0
     processed = json.loads((work / "processed.json").read_text())
-    assert processed == {"folder": "GTD Daily", "sheets": ["20260914Z0330_gtd_sheet"]}
+    assert processed == {"folder": "GTD Daily", "sheets": ["20260914Z0330_gtd_sheet"], "pending": []}
     assert (work / "20260914Z0330_gtd_sheet.decisions.json").exists()
     assert (work / "20260914Z0330_gtd_sheet.tasks.json").exists()  # came out of the PDF
     status = (vault_root / "reMarkable status.md").read_text()
     assert "gtd: remarkable-status" in status and "20260914Z0330_gtd_sheet" in status
     assert msg.read_text().startswith("remarkable: processed 20260914Z0330_gtd_sheet, no vault changes")
     after = {p.name: p.read_text() for p in vault_root.glob("*.md") if p.name != "reMarkable status.md"}
-    assert after == before  # a blank sheet changes nothing
+    assert after == before  # a sheet with no ticks on it changes nothing
 
     rc = main(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15"])
     assert rc == 0
@@ -132,3 +161,112 @@ def test_process_with_nothing_on_device(vault_root, tmp_path, monkeypatch):
     assert main(["process", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15", "--ocr", "null"]) == 0
     assert json.loads((work / "processed.json").read_text())["sheets"] == []
     assert not (vault_root / "reMarkable status.md").exists()
+
+
+def test_offline_tablet_keeps_its_sheet(vault_root, tmp_path, monkeypatch):
+    """The regression: a tablet that is offline holds its ink locally, so the
+    cloud copy looks blank. Such a sheet must not be archived, must not be
+    rotated out of existence, and must not be buried under a new one."""
+    device = tmp_path / "device" / "GTD Daily"
+    device.mkdir(parents=True)
+    log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
+    work = tmp_path / "work"
+
+    assert main(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
+    sheet = device / "20260914Z0330_gtd_sheet.rmdoc"
+    _pack_rmdoc(work / "y.pdf", sheet)  # no strokes: the tablet still has them
+
+    # Three nights with the tablet offline.
+    for day in ("2026-09-15", "2026-09-16", "2026-09-17"):
+        assert main(["process", "--vault", str(vault_root), "--work-dir", str(work),
+                     "--today", day, "--ocr", "null"]) == 0
+        processed = json.loads((work / "processed.json").read_text())
+        assert processed["sheets"] == []
+        assert processed["pending"] == ["20260914Z0330_gtd_sheet"]
+        assert main(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", day]) == 0
+
+    calls = log.read_text()
+    assert "mv GTD Daily/20260914Z0330_gtd_sheet" not in calls  # never archived
+    assert "rm GTD Daily" not in calls                          # never deleted
+    assert sheet.exists()
+    assert [p.name for p in device.iterdir() if p.suffix == ".pdf"] == []  # no new sheets
+    status = (vault_root / "reMarkable status.md").read_text()
+    assert "left on the device" in status
+
+    # WiFi back on: the ink finally reaches the cloud and is picked up as normal.
+    _pack_rmdoc(work / "y.pdf", sheet, strokes=True)
+    assert main(["process", "--vault", str(vault_root), "--work-dir", str(work),
+                 "--today", "2026-09-18", "--ocr", "null"]) == 0
+    processed = json.loads((work / "processed.json").read_text())
+    assert processed == {"folder": "GTD Daily", "sheets": ["20260914Z0330_gtd_sheet"], "pending": []}
+    assert main(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-18"]) == 0
+    # Archived, and *not* rotated out in the same run although its name is four
+    # days old: the grace period starts when we are finished with a sheet.
+    assert (tmp_path / "device" / "GTD Daily" / "Archive" / "20260914Z0330_gtd_sheet.rmdoc").exists()
+    assert len([p for p in device.iterdir() if p.suffix == ".pdf"]) == 1
+
+
+def test_blank_sheet_retired_once_a_newer_one_comes_back_inked(vault_root, tmp_path, monkeypatch):
+    """Ink on a newer sheet proves the tablet synced after the older one was
+    uploaded, so the older blank really is blank and can be cleared away."""
+    device = tmp_path / "device" / "GTD Daily"
+    device.mkdir(parents=True)
+    log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
+    work = tmp_path / "work"
+
+    assert main(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
+    _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc")                  # blank
+    _pack_rmdoc(work / "y.pdf", device / "20260915Z0330_gtd_sheet.rmdoc", strokes=True)    # inked
+
+    assert main(["process", "--vault", str(vault_root), "--work-dir", str(work),
+                 "--today", "2026-09-16", "--ocr", "null"]) == 0
+    processed = json.loads((work / "processed.json").read_text())
+    assert sorted(processed["sheets"]) == ["20260914Z0330_gtd_sheet", "20260915Z0330_gtd_sheet"]
+    assert processed["pending"] == []
+
+    assert main(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-16"]) == 0
+    archive = tmp_path / "device" / "GTD Daily" / "Archive"
+    assert (archive / "20260914Z0330_gtd_sheet.rmdoc").exists()
+    assert (archive / "20260915Z0330_gtd_sheet.rmdoc").exists()
+    assert len([p for p in device.iterdir() if p.suffix == ".pdf"]) == 1
+    assert "mv GTD Daily/20260914Z0330_gtd_sheet" in log.read_text()
+
+
+def test_unreadable_strokes_are_a_failure_not_a_wait(vault_root, tmp_path, monkeypatch):
+    """A sheet that has been written on but whose strokes will not parse must be
+    reported, not waited on forever as if it were blank."""
+    device = tmp_path / "device" / "GTD Daily"
+    device.mkdir(parents=True)
+    _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
+    work = tmp_path / "work"
+
+    assert main(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
+    out = device / "20260914Z0330_gtd_sheet.rmdoc"
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("doc-uuid.content", json.dumps({"cPages": {"pages": [{"id": "page-uuid", "redir": {"value": 0}}]}}))
+        z.write(work / "y.pdf", "doc-uuid.pdf")
+        z.writestr("doc-uuid/page-uuid.rm", b"not a v6 stroke file at all")
+
+    assert main(["process", "--vault", str(vault_root), "--work-dir", str(work),
+                 "--today", "2026-09-15", "--ocr", "null"]) == 1
+    processed = json.loads((work / "processed.json").read_text())
+    assert processed["sheets"] == [] and processed["pending"] == []
+    status = (vault_root / "reMarkable status.md").read_text()
+    assert "none could be read" in status
+
+
+def test_max_pending_allows_a_bounded_pile(vault_root, tmp_path, monkeypatch):
+    """--max-pending 2 lets one more sheet land on top of a single blank one."""
+    device = tmp_path / "device" / "GTD Daily"
+    device.mkdir(parents=True)
+    _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
+    work = tmp_path / "work"
+
+    assert main(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
+    _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc")
+
+    assert main(["process", "--vault", str(vault_root), "--work-dir", str(work),
+                 "--today", "2026-09-15", "--ocr", "null"]) == 0
+    assert main(["publish", "--vault", str(vault_root), "--work-dir", str(work),
+                 "--today", "2026-09-15", "--max-pending", "2"]) == 0
+    assert len([p for p in device.iterdir() if p.suffix == ".pdf"]) == 1

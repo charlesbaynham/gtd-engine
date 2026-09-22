@@ -14,9 +14,19 @@ Subcommands (all take ``--vault``, default cwd):
                older than ``--keep-days`` (default 3), render today's sheet
                from the (now updated) vault and upload it.
 
+**A sheet is only finished with once we have seen the ink on it.** The cloud
+copy of a sheet the tablet is still holding is byte-identical to the one we
+uploaded, so "no strokes in the ``.rmdoc``" is indistinguishable from "the
+tablet has been offline for three days with your ticks on it". Such a sheet
+is *pending*: `process` neither scans nor archives it, and `publish` will not
+upload another one on top of it (up to ``--max-pending``, default 1). A blank
+sheet is only retired once a **newer** sheet comes back inked, which proves
+the tablet has synced since the blank one was uploaded.
+
 Environment: ``REMARKABLE_FOLDER`` (default ``GTD Daily``),
 ``REMARKABLE_ARCHIVE_FOLDER`` (default ``<folder>/Archive``),
 ``REMARKABLE_KEEP_DAYS`` (default 3; 0 keeps everything),
+``REMARKABLE_MAX_PENDING`` (default 1),
 ``RMAPI_DEVICE_TOKEN`` (rmapi auth for headless runs), ``OPENROUTER_API_KEY``
 / ``OPENROUTER_MODEL`` (handwriting) / ``OPENROUTER_AI_MODEL`` (the ✦ AI
 agent alone; falls back to ``OPENROUTER_MODEL``), ``RMAPI_BIN``.
@@ -78,18 +88,65 @@ def sheet_date(name: str) -> date | None:
         return None
 
 
-def stale_sheets(names: list[str], today: date, keep_days: int) -> list[str]:
-    """Sheets dated before ``today - keep_days``; ``keep_days <= 0`` keeps all."""
+def stale_sheets(
+    names: list[str], today: date, keep_days: int, just_archived: set[str] | None = None
+) -> list[str]:
+    """Sheets dated before ``today - keep_days``; ``keep_days <= 0`` keeps all.
+
+    The date is the one in the name, i.e. when the sheet was *uploaded*, not
+    when it was archived. A sheet the tablet held onto while it was offline is
+    therefore already "stale" the moment we finally read it, so a sheet
+    archived in this very run is never deleted in the same run: the grace
+    period is meant to start when we are finished with a sheet.
+    """
     if keep_days <= 0:
         return []
     cutoff = today - timedelta(days=keep_days)
-    return [n for n in names if (d := sheet_date(n)) is not None and d < cutoff]
+    just_archived = just_archived or set()
+    return [
+        n
+        for n in names
+        if n not in just_archived and (d := sheet_date(n)) is not None and d < cutoff
+    ]
 
 
 def _keep_days(args) -> int:
     if args.keep_days is not None:
         return args.keep_days
     return int(os.environ.get("REMARKABLE_KEEP_DAYS", "3"))
+
+
+def _max_pending(args) -> int:
+    """How many un-written sheets may sit on the device before we stop adding.
+
+    At least 1: a pile of sheets nobody has written on is the failure this
+    guard exists to prevent, so "no limit" is not on offer.
+    """
+    value = args.max_pending
+    if value is None:
+        value = int(os.environ.get("REMARKABLE_MAX_PENDING", "1"))
+    return max(1, value)
+
+
+def ink(rmdoc: Path) -> tuple[int, int]:
+    """``(strokes read, stroke layers present)`` on a downloaded sheet.
+
+    A sheet the tablet is still holding comes back byte-identical to the one
+    we uploaded: no ``.rm`` layers at all. That is the only evidence we get
+    that the tablet has not yet handed its copy back — an offline tablet keeps
+    the ink locally while the cloud copy stays pristine — so it is what
+    decides whether a sheet is finished with or still live.
+
+    The two counts are separate because ``parse_annotations`` reports an
+    unreadable layer by returning nothing. Layers with no strokes in them is
+    "this sheet has been written on and we cannot read it", which is a failure
+    to shout about, not a sheet to go on waiting for.
+    """
+    from remarkable_gtd.rm.annotations import extract_from_rmdoc, parse_annotations
+
+    _pdf, rm_by_page = extract_from_rmdoc(rmdoc)
+    layers = [b for b in rm_by_page.values() if b]
+    return sum(len(parse_annotations(b)) for b in layers), len(layers)
 
 
 def _scan_cfg(ocr: str):
@@ -173,10 +230,11 @@ def cmd_process(args) -> int:
     today = _today(args)
     folder = _folder(args)
 
-    names = rm.list_sheets(folder)
+    names = rm.list_sheets(folder)  # oldest first: the names sort by upload time
     print(f"{len(names)} sheet(s) in '{folder}': {', '.join(names) or '-'}")
     results: list[SheetResult] = []
     processed: list[str] = []
+    blank: list[SheetResult] = []  # seen with no ink, not yet proven blank
     failed = 0
 
     vault = load_vault(root)
@@ -185,6 +243,31 @@ def cmd_process(args) -> int:
         print(f"→ {remote}")
         try:
             rmdoc = rm.download(remote, work)
+            strokes, layers = ink(rmdoc)
+        except Exception as exc:  # a broken sheet stays on the device for a human to look at
+            print(f"  ✗ {exc}", file=sys.stderr)
+            results.append(SheetResult(name, scanned=False, error=str(exc)))
+            failed += 1
+            continue
+        if not strokes and layers:
+            # Written on, but the strokes will not parse. Don't wait on this
+            # sheet as if it were blank — say so and leave it for a human.
+            exc = f"{layers} stroke layer(s) on the sheet but none could be read"
+            print(f"  ✗ {exc}", file=sys.stderr)
+            results.append(SheetResult(name, scanned=False, error=exc))
+            failed += 1
+            continue
+        if not strokes:
+            # Nothing written on it *as far as the cloud knows*. The tablet may
+            # simply be offline with a week of ticks on its own copy, so this
+            # sheet is left exactly where it is: not scanned, not archived, and
+            # not replaced.
+            print("  no ink yet — left on the device")
+            result = SheetResult(name, scanned=False, pending=True)
+            results.append(result)
+            blank.append(result)
+            continue
+        try:
             decisions, _manifest, tasks_doc, _annotated = scan_rmdoc(rmdoc, work, _scan_cfg(args.ocr))
         except Exception as exc:  # a broken sheet stays on the device for a human to look at
             print(f"  ✗ {exc}", file=sys.stderr)
@@ -199,16 +282,31 @@ def cmd_process(args) -> int:
         _print_report(report)
         results.append(SheetResult(name, scanned=True, counts=counts, apply=report))
         processed.append(name)
+        # Ink on this sheet proves the tablet has synced since every older
+        # sheet was uploaded — it could not have received this one otherwise —
+        # so the older blanks really are blank and can be retired.
+        for older in blank:
+            older.pending, older.retired = False, True
+            print(f"  · {older.name}: never written on, retiring it")
+            processed.append(older.name)
+        blank.clear()
+
+    pending = [r.name for r in blank]
 
     if args.dry_run:
         print(f"(dry run — {len(vault.dirty)} file(s) would change: {sorted(vault.dirty)})")
+        if pending:
+            print(f"(pending on the device: {', '.join(pending)})")
         print(render_status(results, _run_label(args), today.isoformat()))
         return 1 if failed else 0
 
     save_vault(vault)
     if results:
         write_status(root, render_status(results, _run_label(args), today.isoformat()))
-    (work / PROCESSED_FILE).write_text(json.dumps({"folder": folder, "sheets": processed}, indent=2), encoding="utf-8")
+    (work / PROCESSED_FILE).write_text(
+        json.dumps({"folder": folder, "sheets": processed, "pending": pending}, indent=2),
+        encoding="utf-8",
+    )
     if args.commit_message_file:
         Path(args.commit_message_file).write_text(commit_message(results), encoding="utf-8")
     return 1 if failed else 0
@@ -227,19 +325,37 @@ def cmd_publish(args) -> int:
 
     archive = _archive_folder(args)
     processed_path = work / PROCESSED_FILE
+    pending: list[str] = []
+    archived: set[str] = set()
     if processed_path.exists():
         info = json.loads(processed_path.read_text(encoding="utf-8"))
+        pending = list(info.get("pending", []))
         for name in info.get("sheets", []):
             remote = f"{info.get('folder', folder)}/{name}"
             print(f"→ archiving {remote} -> {archive}")
             rm.move(remote, archive)
+            archived.add(name)
         processed_path.unlink()
 
     # Rotate: the archive only needs the last few days (the decisions are in
-    # git and remarkable-out/ is a CI artifact).
-    for name in stale_sheets(rm.list_sheets(archive), today, _keep_days(args)):
+    # git and remarkable-out/ is a CI artifact). Only sheets we have actually
+    # read the ink off ever reach the archive, so nothing deleted here can
+    # still be holding writing the tablet has not handed over.
+    for name in stale_sheets(rm.list_sheets(archive), today, _keep_days(args), archived):
         print(f"→ deleting {archive}/{name} (older than {_keep_days(args)} days)")
         rm.remove(f"{archive}/{name}")
+
+    # A sheet that came back with no ink on it may be a sheet the tablet is
+    # still holding, offline, with a week of ticks on its own copy. Piling
+    # another one on top of it is how that ink gets buried, so don't.
+    if len(pending) >= _max_pending(args):
+        print(
+            f"→ not publishing: {len(pending)} sheet(s) still waiting on the device "
+            f"with nothing written on them ({', '.join(pending)}). Write on one and it "
+            "will be processed, archived and replaced on the next run; raise "
+            "--max-pending if you want a fresh sheet anyway."
+        )
+        return 0
 
     vault = load_vault(root)
     tasks = build_tasks(vault, today)
@@ -283,6 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("publish"); common(s, work=True, device=True)
     s.add_argument("--archive-folder", default=None, help="where processed sheets go (env REMARKABLE_ARCHIVE_FOLDER)")
     s.add_argument("--keep-days", type=int, default=None, help="delete archived sheets older than this (env REMARKABLE_KEEP_DAYS, default 3; 0 keeps all)")
+    s.add_argument("--max-pending", type=int, default=None, help="don't upload a new sheet once this many un-written sheets are already on the device (env REMARKABLE_MAX_PENDING, default 1)")
     s.set_defaults(func=cmd_publish)
     return p
 

@@ -50,6 +50,37 @@ gtd-remarkable publish --vault . --work-dir remarkable-out --today "$TODAY"
 `process` is safe to re-run: nothing is archived on the device until
 `publish`, so a failed commit just means the sheet is picked up again.
 
+## When the tablet is offline
+
+A sheet is only finished with **once the ink on it has reached the cloud**.
+While your reMarkable is offline it keeps your ticks on its own copy, and the
+cloud copy stays byte-identical to the one that was uploaded — so from CI's
+side, "you have been offline for a week with a full sheet" and "you have not
+written on it yet" look exactly the same.
+
+So a sheet that comes back with no strokes on it is treated as *pending*:
+
+- it is **not scanned** (no OCR, no vision calls, nothing to apply),
+- it is **not archived** and never reaches the rotation that deletes old
+  sheets, so it cannot be deleted out from under the tablet,
+- and `publish` **does not upload another sheet on top of it**
+  (`--max-pending` / `REMARKABLE_MAX_PENDING`, default 1).
+
+Turn WiFi back on, let the tablet sync, and the next run reads the sheet you
+actually wrote on, applies it, archives it, and publishes a fresh one.
+
+A blank sheet is retired — archived, and eventually rotated away — only once a
+**newer** sheet comes back with ink on it. That is proof the tablet has synced
+since the blank one was uploaded, so its blankness is real. Rotation also
+never deletes a sheet in the same run that archived it: the `--keep-days`
+grace period is keyed on the upload date in the name, and a sheet rescued
+after a long offline spell is already "old" by then.
+
+If sheets were archived by an earlier version while your tablet was offline,
+move them back into `GTD Daily` on the device (or in the reMarkable app) and
+the next run will pick them up. Don't re-run a sheet that has already been
+applied — the vault edits are not idempotent.
+
 ## Writing on the sheet
 
 The sheet is Inbox, Next Actions, Delegated and Tickler, then a read-only
