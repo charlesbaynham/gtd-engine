@@ -17,6 +17,12 @@ class SheetResult:
     new projects, project ticks, scan warnings); ``apply`` carries the applied
     lines, the notes (a fuzzy project name that was matched, say), the skipped
     rows and the warnings.
+
+    ``pending`` marks a sheet that came back with no ink on it: it was neither
+    scanned nor archived, because a tablet that has been offline for days looks
+    exactly the same from the cloud as one you simply have not written on yet.
+    ``retired`` marks one of those that a later, inked sheet has since proven
+    really was blank.
     """
 
     name: str
@@ -24,6 +30,8 @@ class SheetResult:
     counts: dict = field(default_factory=dict)
     apply: ApplyReport | None = None
     error: str | None = None
+    pending: bool = False
+    retired: bool = False
 
 
 def sheet_counts(decisions: dict, base: dict | None = None) -> dict:
@@ -56,6 +64,23 @@ def render_status(results: list[SheetResult], run_label: str, today: str) -> str
         if r.error:
             lines += _section("Error", [r.error])
             continue
+        if r.pending:
+            lines += [
+                "Nothing written on it yet, so it has been left on the device untouched "
+                "— and no new sheet is published while it is there. If your tablet has "
+                "been offline, your ink is safe on it: turn WiFi on, let it sync, and the "
+                "next run will read it. (Raise `--max-pending` if you want a fresh sheet "
+                "anyway.)",
+                "",
+            ]
+            continue
+        if r.retired:
+            lines += [
+                "Never written on. A later sheet came back inked, which proves the tablet "
+                "synced after this one was uploaded, so it has been archived.",
+                "",
+            ]
+            continue
         c = r.counts
         lines += [
             f"{c.get('pages', 0)} pages, {c.get('actions', 0)} actions, {c.get('edits', 0)} edits, "
@@ -73,11 +98,14 @@ def render_status(results: list[SheetResult], run_label: str, today: str) -> str
 
 def commit_message(results: list[SheetResult]) -> str:
     applied = [a for r in results if r.apply for a in r.apply.applied]
-    names = ", ".join(r.name for r in results)
+    pending = [r for r in results if r.pending]
+    names = ", ".join(r.name for r in results if not r.pending)
     if len(applied) == 1:
         summary = f"remarkable: {applied[0][:60]}"
     elif applied:
         summary = f"remarkable: {len(applied)} vault updates from {names}"
+    elif pending and not names:
+        summary = f"remarkable: {len(pending)} sheet(s) still unwritten on the device"
     else:
         summary = f"remarkable: processed {names or 'no sheets'}, no vault changes"
     body = [f"- {a}" for a in applied] or ["- none"]

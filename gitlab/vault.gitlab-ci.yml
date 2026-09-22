@@ -21,6 +21,8 @@
 #   REMARKABLE_FOLDER    optional — default "GTD Daily"
 #   REMARKABLE_ARCHIVE_FOLDER optional — default "<REMARKABLE_FOLDER>/Archive"
 #   REMARKABLE_KEEP_DAYS optional — archived sheets older than this are deleted (default 3)
+#   REMARKABLE_MAX_PENDING optional — how many un-written sheets may sit on the
+#                        device before publish stops adding more (default 1, minimum 1)
 #   REMARKABLE_GTD_REF   optional — overrides the remarkable-gtd commit the engine pins
 #
 # GTD_ENGINE_REF pins which gtd-engine tag/ref every pip install below uses;
@@ -80,6 +82,9 @@ remarkable:
   #              failed push just means the sheet is processed again next time
   #   publish  — archive the processed sheets on the device, drop archived
   #              sheets older than REMARKABLE_KEEP_DAYS, render + upload
+  # A sheet that comes back with no ink on it is left alone — neither scanned
+  # nor archived — and publish uploads nothing on top of it: an offline tablet
+  # holds your ticks locally, so a pristine cloud copy proves nothing.
   stage: remarkable
   needs: [maintain]
   rules:
