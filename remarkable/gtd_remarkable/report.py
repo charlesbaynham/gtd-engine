@@ -36,14 +36,17 @@ class SheetResult:
 
 def sheet_counts(decisions: dict, base: dict | None = None) -> dict:
     """The scanner's `summarize()` counts plus the two only this side names:
-    rows whose NEW box was ticked, and ticks on project-page items."""
+    rows whose NEW box was ticked, ticks on project-page items, and
+    projects finished from their project row."""
     pages = decisions.get("pages") or [decisions]
     tasks = [(p, t) for p in pages for t in p.get("tasks", [])]
     counts = dict(base or {})
     counts["new_projects"] = sum(1 for _p, t in tasks if t.get("new_project"))
     counts["project_ticks"] = sum(
-        1 for p, t in tasks if p.get("bucket") == "project" and t.get("action") == "done"
+        1 for p, t in tasks
+        if p.get("bucket") == "project" and t.get("action") == "done" and not t.get("id", "").endswith("-PJ")
     )
+    counts["projects_finished"] = sum(1 for _p, t in tasks if t.get("id", "").endswith("-PJ") and t.get("action") == "done")
     return counts
 
 
@@ -85,7 +88,8 @@ def render_status(results: list[SheetResult], run_label: str, today: str) -> str
         lines += [
             f"{c.get('pages', 0)} pages, {c.get('actions', 0)} actions, {c.get('edits', 0)} edits, "
             f"{c.get('captures', 0)} capture lines, {c.get('new_projects', 0)} new projects, "
-            f"{c.get('project_ticks', 0)} project ticks, {c.get('warnings', 0)} scan warnings",
+            f"{c.get('project_ticks', 0)} project ticks, {c.get('projects_finished', 0)} projects finished, "
+            f"{c.get('warnings', 0)} scan warnings",
             "",
         ]
         if r.apply is not None:

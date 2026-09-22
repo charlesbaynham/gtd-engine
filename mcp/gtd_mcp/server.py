@@ -452,9 +452,46 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
 
     @mcp.tool()
     def archive_project(ctx: Context, name: str, dry_run: bool = False) -> dict:
-        """Move a project page to Project details/Done/<name>.md and remove
-        any Next actions.md rows that linked to it."""
+        """Mark a whole project done: move its page to
+        Project details/Done/<name>.md and remove the Next actions,
+        Delegated, Scheduled and Tickler rows that linked to it."""
         return do_write(ctx, opsmod.archive_project, dry_run, name=name)
+
+    @mcp.tool()
+    def rename_project(ctx: Context, project: str, new_name: str, dry_run: bool = False) -> dict:
+        """Rename a project: its page moves to '<new_name>.md' in the same
+        folder and every [[link]] to it in Next actions, Delegated,
+        Scheduled, Inbox, Tickler and the other project pages is rewritten
+        (alias and heading kept). Links in Reference/ or Done/ are not
+        touched; their count comes back as `unmanaged_links`."""
+        return do_write(ctx, opsmod.rename_project, dry_run, project=project, new_name=new_name)
+
+    @mcp.tool()
+    def route_project_action(
+        ctx: Context,
+        handle: str,
+        to: str,
+        person: str | None = None,
+        chase_by: str | None = None,
+        date: str | None = None,
+        deadline: str | None = None,
+        priority: int | None = None,
+        bucket: str | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Delegate, schedule, defer or re-activate one of a project's
+        actions without taking it off the project page. `handle` is a
+        project item's handle (from get_project). `to` is next-actions,
+        delegated (needs `person`; `chase_by` defaults to today + 7 days),
+        scheduled (needs `date`) or tickler (`bucket`: Next week / Next two
+        weeks / Next month / Next quarter). Every row that surfaced the
+        action before is removed and one linked row is written in `to`, so
+        completing that row later ticks the project's checkbox. Use
+        `triage` instead to take an action OUT of its project."""
+        return do_write(
+            ctx, opsmod.route_project_action, dry_run, handle=handle, to=to, person=person,
+            chase_by=chase_by, date=date, deadline=deadline, priority=priority, bucket=bucket,
+        )
 
     # --- housekeeping ---
 

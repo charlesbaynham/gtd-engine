@@ -18,7 +18,8 @@ def _tasks_doc(vault) -> dict:
     """What remarkable_gtd.common.embedded.tasks_document would embed: every
     printed row keyed by its sheet id, including the Inbox's blank capture
     rows (CP-*), the New Projects page's blank rows (NP-*), each project's
-    open items (P01-02) and its add-an-action lines (P01-C1)."""
+    open items (P01-02), its project row (P01-PJ) and its add-an-action
+    lines (P01-C1)."""
     t = build_tasks(vault, TODAY)
     out = {}
     for i, it in enumerate(t["inbox"], 1):
@@ -38,6 +39,7 @@ def _tasks_doc(vault) -> dict:
         out[f"NP-{i:02d}"] = {"act": "", "bucket": "newproj"}
     for pi, proj in enumerate(t["projects"], 1):
         ref = f"P{pi:02d}"
+        out[f"{ref}-PJ"] = {"act": proj["name"], "bucket": "projhead", "proj": proj["name"], "goal": proj["goal"]}
         for pos, item in enumerate(proj["items"], 1):
             if item["done"]:
                 continue  # printed struck through, no boxes
@@ -500,15 +502,129 @@ def test_project_item_stale_handle_is_refound_by_its_printed_text(vault_root):
     assert len(report.applied) == 1 and not report.skipped
 
 
-def test_project_item_rejects_a_routing_tick(vault_root):
+WEDDING = "GTD|project-02|2026-09-15"
+
+
+def _proj_page(*rows):
+    return _decisions(_page(WEDDING, list(rows), bucket="project"))
+
+
+def _slots(**texts):
+    return {k: {"text": v, "fill": 0.2} for k, v in texts.items()}
+
+
+def test_project_step_delegated_stays_on_its_page(vault_root):
     vault = load_vault(vault_root)
     doc = _tasks_doc(vault)
     report = apply_decisions(
-        vault, TODAY, _decisions(_page("GTD|project-02|2026-09-15", [_d("P02-01", "to_deleg")], bucket="project")), doc
+        vault, TODAY, _proj_page(_d("P02-01", "to_deleg", fields=_slots(to="Ben", due="1 Oct"))), doc
     )
     save_vault(vault)
+    assert "- [ ] Read Ben's paper" in _text(vault_root, "Project details/Wedding 2026.md")
+    assert "Read Ben's paper" not in _text(vault_root, "Next actions.md")
+    # its priority moved with it, and the row links back to the project
+    assert "| Read Ben's paper | Ben | 2026-10-01 | 3 | [[Wedding 2026]] |" in _text(vault_root, "Delegated.md")
+    assert len(report.applied) == 1 and not report.warnings
+
+    # Ticking the Delegated row off tomorrow ticks the step.
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    dg = next(k for k, v in doc["tasks"].items() if v["bucket"] == "delegated" and v["act"] == "Read Ben's paper")
+    apply_decisions(vault, TODAY, _decisions(_page("GTD|delegated|2026-09-15", [_d(dg, "done")])), doc)
+    save_vault(vault)
+    assert "- [x] Read Ben's paper" in _text(vault_root, "Project details/Wedding 2026.md")
+
+
+def test_project_step_deferred_and_dropped(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    report = apply_decisions(
+        vault, TODAY, _proj_page(_d("P02-01", "drop"), _d("P02-02", "defer", defer_period="1m")), doc
+    )
+    save_vault(vault)
+    page = _text(vault_root, "Project details/Wedding 2026.md")
+    assert "Read Ben's paper" not in page
+    assert "Read Ben's paper" not in _text(vault_root, "Next actions.md")
+    assert "- [ ] Pay Sandra" in page
+    assert "Pay Sandra [[Wedding 2026]]" in _text(vault_root, "Tickler/Next month.md")
+    assert len(report.applied) == 2 and not report.warnings
+
+
+def test_project_step_slots_without_a_tick_are_reported(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    report = apply_decisions(vault, TODAY, _proj_page(_d("P02-01", fields=_slots(to="Ben"))), doc)
     assert not report.applied and not vault.dirty
-    assert any("only takes" in w for w in report.warnings)
+    assert any("no box ticked" in w for w in report.warnings)
+
+
+def test_project_row_regoals_renames_and_finishes_after_its_steps(vault_root):
+    """Every box on the project row at once, with a step ticked on the same
+    page: the step is applied first, then goal, rename, archive."""
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    head = _d("P02-PJ", "done", fields=_slots(goal="Married, and still solvent", name="Wedding"))
+    report = apply_decisions(vault, TODAY, _proj_page(head, _d("P02-01", "done")), doc)
+    save_vault(vault)
+    assert not (vault_root / "Project details" / "Wedding 2026.md").exists()
+    assert not (vault_root / "Project details" / "Wedding.md").exists()
+    done = _text(vault_root, "Project details/Done/Wedding.md")
+    assert "Married, and still solvent" in done
+    assert "- [x] Read Ben's paper" in done
+    assert "Wedding" not in _text(vault_root, "Next actions.md")
+    assert [a.split(":")[0] for a in report.applied] == ["P02-01 \"Read Ben's paper\"", "P02-PJ project 'Wedding 2026'",
+                                                         "P02-PJ project 'Wedding 2026'", "P02-PJ project 'Wedding'"]
+    assert not report.warnings
+
+
+def test_project_row_rename_rewrites_links(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    report = apply_decisions(vault, TODAY, _proj_page(_d("P02-PJ", fields=_slots(name="Our wedding"))), doc)
+    save_vault(vault)
+    assert (vault_root / "Project details" / "Our wedding.md").exists()
+    assert "| Read Ben's paper | [[Our wedding]] |" in _text(vault_root, "Next actions.md")
+    assert len(report.applied) == 1 and not report.warnings
+
+
+def test_project_row_rename_clash_is_reported(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    report = apply_decisions(vault, TODAY, _proj_page(_d("P02-PJ", fields=_slots(name="Boiler service"))), doc)
+    assert not report.applied
+    assert any("already exists" in w for w in report.warnings)
+    assert (vault_root / "Project details" / "Wedding 2026.md").exists()
+
+
+def test_ai_on_the_project_row_uses_project_ops(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    row = _ai_d(
+        "P02-PJ",
+        _op("set_project_goal", goal="Married by June"),
+        _op("rename_project", text="June wedding"),
+    )
+    report = apply_decisions(vault, TODAY, _proj_page(row), doc)
+    save_vault(vault)
+    assert "Married by June" in _text(vault_root, "Project details/June wedding.md")
+    assert len(report.applied) == 2 and not report.warnings
+
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    report = apply_decisions(vault, TODAY, _proj_page(_ai_d("P02-PJ", _op("complete"))), doc)
+    save_vault(vault)
+    assert (vault_root / "Project details" / "Done" / "June wedding.md").exists()
+
+
+def test_ai_move_of_a_project_step_keeps_it_on_the_page(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    row = _ai_d("P02-01", _op("move", to="delegated", person="Ben", due="2026-10-02"))
+    report = apply_decisions(vault, TODAY, _proj_page(row), doc)
+    save_vault(vault)
+    assert "- [ ] Read Ben's paper" in _text(vault_root, "Project details/Wedding 2026.md")
+    assert "| Read Ben's paper | Ben | 2026-10-02 |" in _text(vault_root, "Delegated.md")
+    assert len(report.applied) == 1 and not report.warnings
 
 
 def test_summary_page_is_skipped(vault_root):

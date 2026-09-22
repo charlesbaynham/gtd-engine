@@ -301,6 +301,28 @@ Writes to project pages:
   surrounding blank lines as they were. A `# Goal` heading with no prose
   under it gains the paragraph, followed by a blank line.
 
+- **Rewording** an item rewrites its line and the Action/Thing cell (or
+  line body) of every row surfacing it, so the rename never leaves a
+  `row-mismatch` behind. **Deleting** an item removes its line and every
+  row surfacing it.
+
+- **Routing** an item (delegate, schedule, defer or re-activate one step of
+  a project) leaves the checkbox where it is and replaces every row
+  surfacing it with one row in the target view — Next actions, Delegated,
+  Scheduled or a Tickler file — that links this page. The new row is
+  written before the old ones are removed.
+
+- **Renaming** a project moves the page to `<new name>.md` in the same
+  folder and rewrites every link to it (`[[old]]`, `[[old|alias]]`,
+  `[[old#heading]]`, with or without a folder prefix) in the table cells,
+  the Inbox and Tickler lines and the other active project pages, keeping
+  any alias or heading. Files automation does not manage (`Reference/`,
+  `Done/`) are not rewritten.
+
+- **Archiving** a project (marking the whole project done) moves the page
+  to `Project details/Done/<name>.md` and removes every Next actions,
+  Delegated, Scheduled and Tickler row that links it.
+
 - **Promoting** an item to a project copies
   `Project details/-Project template.md` (basename configurable in the
   plugin) to `<template's folder>/<name>.md`, writes the item text as the

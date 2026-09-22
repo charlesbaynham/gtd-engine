@@ -115,8 +115,21 @@ Projects summary, one page per project, and a New Projects page.
   name and a line will carry.
 - **Project pages** print the goal, the status lines, every open action with
   a badge for the view it is surfaced in (NA/DG/SC/TK, or STALLED if none),
-  and the done ones struck through. An action row there takes ✓ Done (which
-  ticks it off on the page and drops the Next actions row for it) and ✦ AI.
+  and the done ones struck through. An action (a step) is an ordinary
+  action that lives on its page: ✓ Done ticks it off and drops every row
+  surfacing it; → Deleg (TO = the person, DUE = chase-by) and Defer
+  1w/1m/1q move *where it is surfaced* — to Delegated or a tickler, linked
+  back to the project — while the checkbox stays on the page, so ticking
+  the Delegated row off later ticks the step; ✗ Drop deletes the step and
+  its rows; ✦ AI as anywhere else.
+- **The project row** at the top of each project page stands for the
+  project itself. Write a new name in RENAME TO (the page and every link to
+  it are renamed), a new goal in NEW GOAL, and tick ✓ Finish when the whole
+  project is done (its page moves to `Project details/Done/` and every row
+  surfacing it goes). They apply in that order and after every other row
+  on the sheet, so a step ticked on the same page lands before the page
+  moves. ✦ AI on it hands the project to the agent (`rename_project`,
+  `set_project_goal`, `archive_project`).
 - **Tick ✦ AI and write anything in the row**: reword it, "→ Louise", "due
   Fri", "priority 8", "defer 1m", "drop", "done", "move to <project>",
   "back to inbox", "also add: ring the venue", "split this into three",
@@ -124,7 +137,8 @@ Projects summary, one page per project, and a New Projects page.
   that is told how GTD works and what every vault operation means; it
   returns a `gtd.ai/3` reading with a list of operations (`update`,
   `complete`, `delete`, `move`, `capture`, `add_next_action`, `delegate`,
-  `schedule`, `add_to_tickler`, `create_project`, `add_project_action`),
+  `schedule`, `add_to_tickler`, `create_project`, `add_project_action`,
+  `rename_project`, `set_project_goal`, `archive_project`),
   applied in order. `OPENROUTER_AI_MODEL` picks the model for this call
   alone.
 
