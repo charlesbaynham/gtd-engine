@@ -21,7 +21,7 @@ permissions:
   contents: write
 jobs:
   maintain:
-    uses: charlesbaynham/gtd-engine/.github/workflows/nightly-maintenance.yml@v1
+    uses: charlesbaynham/gtd-engine/.github/workflows/nightly-maintenance.yml@v2
     with:
       vault_tz: Europe/London
 """
@@ -38,7 +38,7 @@ permissions:
 jobs:
   remarkable:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    uses: charlesbaynham/gtd-engine/.github/workflows/remarkable.yml@v1
+    uses: charlesbaynham/gtd-engine/.github/workflows/remarkable.yml@v2
     with:
       vault_tz: Europe/London
     secrets:
@@ -48,7 +48,7 @@ jobs:
 
 _GITLAB_CI_YML = """\
 include:
-  - remote: https://raw.githubusercontent.com/charlesbaynham/gtd-engine/v1/gitlab/vault.gitlab-ci.yml
+  - remote: https://raw.githubusercontent.com/charlesbaynham/gtd-engine/v2/gitlab/vault.gitlab-ci.yml
 variables:
   VAULT_TZ: Europe/London
 """

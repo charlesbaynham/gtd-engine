@@ -4,7 +4,7 @@ The nightly maintenance for a GTD vault, and the reference Python
 implementation of [`FORMAT.md`](gtd_ci/docs/FORMAT.md). Stdlib only at runtime.
 
 ```bash
-pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@v1#subdirectory=ci"
+pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@v2#subdirectory=ci"
 
 python -m gtd_ci run --vault ~/gtd --dry-run --today "$(date +%F)"   # plan and diffs, writes nothing
 python -m gtd_ci run --vault ~/gtd --today "$(date +%F)"             # expire, stamp, promote, sort, lint

@@ -33,7 +33,7 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
 variables:
-  GTD_ENGINE_REF: v1
+  GTD_ENGINE_REF: v2
   VAULT_TZ: Europe/London
 
 stages:

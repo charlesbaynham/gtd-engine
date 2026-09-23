@@ -118,9 +118,9 @@ def test_migrate_writes_thin_callers_and_keeps_prune_storage(tmp_path: Path) -> 
 
     workflows = vault / ".github" / "workflows"
     nightly = (workflows / "nightly-maintenance.yml").read_text(encoding="utf-8")
-    assert "uses: charlesbaynham/gtd-engine/.github/workflows/nightly-maintenance.yml@v1" in nightly
+    assert "uses: charlesbaynham/gtd-engine/.github/workflows/nightly-maintenance.yml@v2" in nightly
     remarkable = (workflows / "remarkable.yml").read_text(encoding="utf-8")
-    assert "uses: charlesbaynham/gtd-engine/.github/workflows/remarkable.yml@v1" in remarkable
+    assert "uses: charlesbaynham/gtd-engine/.github/workflows/remarkable.yml@v2" in remarkable
     # prune-storage.yml is not part of the split; migrate must not touch it.
     assert (workflows / "prune-storage.yml").read_text(encoding="utf-8") == _PRUNE_STORAGE_YML
 
@@ -148,7 +148,7 @@ def test_migrate_gitlab_hosted_vault_gets_no_github_nightly(tmp_path: Path) -> N
 def test_migrate_vault_with_no_ci_gets_github_nightly(tmp_path: Path) -> None:
     vault = _build_vault(tmp_path, claude_md=_CLAUDE_WITH_SECTION_9, with_old_nightly=False, with_gitlab_ci=False)
     migrate(vault)
-    assert "nightly-maintenance.yml@v1" in (vault / ".github" / "workflows" / "nightly-maintenance.yml").read_text(encoding="utf-8")
+    assert "nightly-maintenance.yml@v2" in (vault / ".github" / "workflows" / "nightly-maintenance.yml").read_text(encoding="utf-8")
 
 
 def test_migrate_remarkable_flag_forces_caller(tmp_path: Path) -> None:
@@ -162,7 +162,7 @@ def test_migrate_replaces_gitlab_ci(tmp_path: Path) -> None:
     migrate(vault)
     gitlab_ci = (vault / ".gitlab-ci.yml").read_text(encoding="utf-8")
     assert "include:" in gitlab_ci
-    assert "gtd-engine/v1/gitlab/vault.gitlab-ci.yml" in gitlab_ci
+    assert "gtd-engine/v2/gitlab/vault.gitlab-ci.yml" in gitlab_ci
 
 
 def test_migrate_claude_md_section_9_becomes_tail(tmp_path: Path) -> None:
