@@ -31,6 +31,8 @@ workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'  # pipeline-trigger token POST
+    - if: '$CI_PIPELINE_SOURCE == "api"'      # POST /projects/:id/pipeline
 
 variables:
   GTD_ENGINE_REF: v2
