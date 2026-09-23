@@ -344,6 +344,39 @@ def _execute_one(vault: Vault, today: date, task: dict, task_id: str, bucket: st
                 return _project_stem(vault, value, task_id, report)
         return None
 
+    def existing_project() -> str:
+        """The project a project-level op names, defaulting to the row's own."""
+        given = _op_text(op, "name") or _op_text(op, "project")
+        if given:
+            stem = _project_stem(vault, given, task_id, report)
+            if stem is None:
+                raise _OpWarning(f"no project {given!r} to {name.replace('_', ' ')}")
+            return stem
+        if task.get("proj"):
+            return task["proj"]
+        raise _OpWarning(f"{name} without a project name")
+
+    if bucket == "projhead" and name in ("update", "delete", "move"):
+        raise _OpWarning(
+            f"{name!r} on the project row — use rename_project / set_project_goal / archive_project"
+        )
+    if bucket == "projhead" and name == "complete":
+        name = "archive_project"  # ✓ on the project itself: the whole project is done
+
+    if name == "rename_project":
+        if not text:
+            raise _OpWarning("rename_project without a new name")
+        return ops.rename_project(vault, today, project=existing_project(), new_name=text)
+
+    if name == "set_project_goal":
+        goal = _op_text(op, "goal") or text
+        if not goal:
+            raise _OpWarning("set_project_goal without a goal")
+        return ops.set_project_goal(vault, today, project=existing_project(), goal=goal)
+
+    if name == "archive_project":
+        return ops.archive_project(vault, today, name=existing_project())
+
     if name == "update":
         kwargs: dict = {}
         if bucket == "next":
@@ -406,6 +439,29 @@ def _execute_one(vault: Vault, today: date, task: dict, task_id: str, bucket: st
             target = f"project:{stem}"
         else:
             raise _OpWarning(f"unknown move destination {op.get('to')!r}")
+        if bucket == "project" and to in ("next", "delegated", "scheduled", "tickler"):
+            # A project step stays on its page; only where it is surfaced moves.
+            if text and text != printed:
+                # Reworded and routed in one go: reword the step (and its
+                # rows) in place, then route it under its new wording.
+                _run(vault, today, task, task_id, ops.update, text=text)
+                fresh = refresh_handle(vault, task.get("handle", ""), display_text(text))
+                if fresh is None:
+                    raise _OpWarning(f"reworded to {text!r} but could not find it again to route it")
+                task = {**task, "handle": fresh, "act": display_text(text)}
+            route: dict = {"to": {"next": "next-actions"}.get(to, to)}
+            if to == "next":
+                route.update(priority=op.get("priority"), deadline=_op_date(op, today))
+            elif to == "delegated":
+                route.update(priority=op.get("priority"), chase_by=_op_date(op, today),
+                             **_person_kw({"person": _op_text(op, "person")}, task_id, report))
+            elif to == "scheduled":
+                route["date"] = _op_date(op, today)
+                if route["date"] is None:
+                    raise _OpWarning("move to Scheduled needs a date")
+            else:
+                route["bucket"] = PERIOD_BUCKETS.get((op.get("period") or "").strip(), "Next week")
+            return _run(vault, today, task, task_id, ops.route_project_action, **_drop_none(route))
         kw: dict = {"text": text or None}
         if to == "next":
             kw["priority"] = op.get("priority")
@@ -691,26 +747,108 @@ def _apply_capture_row(vault: Vault, today: date, decision: dict, task: dict, ta
 
 def _apply_project_item(vault: Vault, today: date, decision: dict, task: dict, task_id: str,
                         report: ApplyReport) -> None:
-    """A row on a project page: ✓ Done ticks the item (and drops any view row
-    surfacing it). There are no metadata slots, and a ✦ AI row never reaches
-    here — ``apply_task`` routes it to ``_apply_ai_row`` first."""
-    action = decision.get("action", "none")
-    label = f"{task_id} {task.get('act', '')[:60]!r}"
+    """A step on a project page: an ordinary action that lives on its page.
 
+    ✓ Done ticks it (and drops every row surfacing it). → Deleg and the
+    Defer trio re-surface it — waiting on the person in TO, chase-by DUE,
+    or parked in the tickler — while the checkbox stays on the page, so the
+    project keeps its plan and ticking the Delegated row off later ticks the
+    step. ✗ Drop deletes the step and its rows. A ✦ AI row never reaches
+    here — ``apply_task`` routes it to ``_apply_ai_row`` first.
+    """
+    action = decision.get("action", "none")
+    period = decision.get("defer_period")
+    label = f"{task_id} {task.get('act', '')[:60]!r}"
+    upd = _row_updates(decision.get("fields") or {}, "project", today, report.warnings, task_id)
+
+    if action == "none":
+        if upd:
+            report.warnings.append(
+                f"{task_id}: {', '.join(sorted(upd))} written on a project step but no box ticked — ignored"
+            )
+        return
+    try:
+        if action == "done":
+            r = _run(vault, today, task, task_id, ops.complete)
+        elif action == "to_deleg":
+            r = _run(vault, today, task, task_id, ops.route_project_action, to="delegated",
+                     **_drop_none({"chase_by": upd.get("date"), **_person_kw(upd, task_id, report)}))
+            if r.payload.get("chase_by_defaulted"):
+                report.warnings.append(f"{task_id}: chase-by defaulted to {r.payload['chase_by_defaulted']}")
+        elif action == "defer":
+            r = _run(vault, today, task, task_id, ops.route_project_action, to="tickler",
+                     bucket=PERIOD_BUCKETS.get(period or "1w", "Next week"))
+        elif action == "drop":
+            r = _run(vault, today, task, task_id, ops.delete)
+        else:
+            report.warnings.append(f"{task_id}: {action!r} is not something a project step takes — ignored")
+            return
+    except _Skip as exc:
+        report.skipped.append(str(exc))
+        return
+    except ops.OpError as exc:
+        report.warnings.append(f"{task_id}: {exc}")
+        return
+    if action in ("done", "drop") and upd:
+        report.warnings.append(f"{task_id}: {', '.join(sorted(upd))} ignored on a {action!r} project step")
+    report.applied.append(
+        f"{label}: {action}{f' [{period}]' if action == 'defer' and period else ''} — {r.summary}"
+    )
+
+
+# --- the project row -----------------------------------------------------------------
+
+
+def _apply_project_head(vault: Vault, today: date, decision: dict, task: dict, task_id: str,
+                        report: ApplyReport) -> None:
+    """A project page's project row: the project itself.
+
+    NEW GOAL rewrites the goal, RENAME TO renames the page and every link
+    to it, ✓ Finish archives the project to ``Done/`` — in that order, so a
+    project can be re-goaled, renamed and finished on one sheet. Runs after
+    every other row of the sheet (``apply_decisions``), so the steps ticked
+    or routed on the same page are applied to the page before it moves.
+    """
+    stem = (task.get("proj") or task.get("act") or "").strip()
+    fields = decision.get("fields") or {}
+    action = decision.get("action", "none")
+    goal = _field_text(fields, "goal")
+    new_name = _field_text(fields, "name")
+    label = f"{task_id} project {stem!r}"
+    if not stem:
+        report.warnings.append(f"{task_id}: project row carries no project name — nothing changed")
+        return
+    if "goal" in fields and not goal:
+        report.warnings.append(f"{task_id}: ink in NEW GOAL but nothing legible was transcribed — goal unchanged")
+    if "name" in fields and not new_name:
+        report.warnings.append(f"{task_id}: ink in RENAME TO but nothing legible was transcribed — name unchanged")
+
+    if goal:
+        try:
+            r = ops.set_project_goal(vault, today, project=stem, goal=goal)
+            report.applied.append(f"{label}: new goal — {r.summary}")
+        except ops.OpError as exc:
+            report.warnings.append(f"{task_id}: goal not set — {exc}")
+    if new_name:
+        try:
+            r = ops.rename_project(vault, today, project=stem, new_name=new_name)
+            report.applied.append(f"{label}: renamed — {r.summary}")
+            if r.payload.get("unmanaged_links"):
+                report.notes.append(
+                    f"{task_id}: {r.payload['unmanaged_links']} link(s) to [[{stem}]] outside the managed "
+                    "files (Reference/, Done/) still point at the old name"
+                )
+            stem = r.payload["new_path"].rsplit("/", 1)[-1].removesuffix(".md")
+        except ops.OpError as exc:
+            report.warnings.append(f"{task_id}: not renamed to {new_name!r} — {exc}")
     if action == "done":
         try:
-            r = _run(vault, today, task, task_id, ops.complete)
-        except _Skip as exc:
-            report.skipped.append(str(exc))
-            return
+            r = ops.archive_project(vault, today, name=stem)
+            report.applied.append(f"{task_id} project {stem!r}: finished — {r.summary}")
         except ops.OpError as exc:
-            report.warnings.append(f"{task_id}: {exc}")
-            return
-        report.applied.append(f"{label}: done — {r.summary}")
-        return
-
-    if action != "none":
-        report.warnings.append(f"{task_id}: a project row only takes ✓ Done and ✦ AI — {action!r} ignored")
+            report.warnings.append(f"{task_id}: project not archived — {exc}")
+    elif action != "none":
+        report.warnings.append(f"{task_id}: the project row only takes ✓ Finish and ✦ AI — {action!r} ignored")
 
 
 # --- one scanned row ----------------------------------------------------------------
@@ -732,6 +870,9 @@ def apply_task(vault: Vault, today: date, decision: dict, task: dict, report: Ap
         return
     if bucket == "project":
         _apply_project_item(vault, today, decision, task, task_id, report)
+        return
+    if bucket == "projhead":
+        _apply_project_head(vault, today, decision, task, task_id, report)
         return
 
     action = decision.get("action", "none")
@@ -856,6 +997,10 @@ def apply_decisions(vault: Vault, today: date, decisions: dict, tasks_doc: dict 
     pages = decisions.get("pages")
     if pages is None:
         pages = [decisions]
+    # A project row can rename or archive its project; every other row of
+    # the sheet (its own steps included) is addressed by the name the sheet
+    # was printed with, so the project rows run once all of those have.
+    project_rows: list[tuple[dict, dict]] = []
     for page in pages:
         page_key = page.get("page_key", page.get("header_qr", "?"))
         if page.get("skipped"):
@@ -876,6 +1021,11 @@ def apply_decisions(vault: Vault, today: date, decisions: dict, tasks_doc: dict 
                 continue
             if not decision.get("qr_verified", True) and decision.get("action", "none") != "none":
                 report.warnings.append(f"{task_id}: row QR did not verify; applying by position")
+            if task.get("bucket") == "projhead":
+                project_rows.append((decision, task))
+                continue
             apply_task(vault, today, decision, task, report)
         apply_captures(vault, today, page.get("captures", []), page_key, report)
+    for decision, task in project_rows:
+        apply_task(vault, today, decision, task, report)
     return report

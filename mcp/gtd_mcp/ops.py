@@ -46,6 +46,8 @@ __all__ = [
     "set_project_goal",
     "tick_project_action",
     "archive_project",
+    "rename_project",
+    "route_project_action",
     "run_maintenance",
 ]
 
@@ -337,8 +339,56 @@ def _remove(loc: Located) -> None:
     else:
         page = loc.container
         del page.lines[loc.obj.line_index]
-        if loc.obj.line_index < page.section_end:
-            page.section_end -= 1
+        _reparse_project(page)
+
+
+def _surfacing_entries(vault: Vault, page: projectsmod.ProjectPage, text: str):
+    """Every view entry surfacing the item `text` of `page` (FORMAT.md §6): a
+    row or tickler line linking this page whose Action/Thing/body equals the
+    text. Yields `(relpath, container, entry)`; `container` is the table or
+    the tickler LineFile."""
+    tables = (
+        ("Next actions.md", vault.next_actions),
+        ("Delegated.md", vault.delegated),
+        ("Scheduled.md", vault.scheduled),
+    )
+    for table_name, table in tables:
+        if table is None or not table.has("project"):
+            continue
+        for entry in table.entries:
+            link_name = projectsmod.parse_link(table.cell(entry.cells, "project"))
+            if link_name and entry.cells[0].strip() == text:
+                if projectsmod.resolve_link(link_name, vault.project_index).resolved == page.path:
+                    yield table_name, table, entry
+    for relpath, lf in vault.ticklers.items():
+        for entry in lf.order:
+            if entry is None:
+                continue
+            body, link_name = linesmod.split_project_link(entry.text)
+            if link_name and body.strip() == text:
+                if projectsmod.resolve_link(link_name, vault.project_index).resolved == page.path:
+                    yield relpath, lf, entry
+
+
+def _sweep_surfacing(vault: Vault, page: projectsmod.ProjectPage, text: str) -> tuple[int, int]:
+    """Remove every view entry surfacing `text` on `page`. Returns
+    `(removed Next actions rows, removed other rows/lines)`."""
+    return _drop_entries(vault, list(_surfacing_entries(vault, page, text)))
+
+
+def _drop_entries(vault: Vault, found: list) -> tuple[int, int]:
+    removed = removed_other = 0
+    for relpath, container, entry in found:
+        if relpath == "Next actions.md":
+            removed += 1
+        else:
+            removed_other += 1
+        if hasattr(container, "entries"):
+            container.entries = [e for e in container.entries if e is not entry]
+        else:
+            container.order = [e for e in container.order if e is not entry]
+        mark_dirty(vault, relpath)
+    return removed, removed_other
 
 
 # --- capture and simple table appends ---
@@ -565,45 +615,7 @@ def complete(vault: Vault, today: date, *, handle: str) -> OpResult:
         item = loc.obj
         _tick_item(page, item)
         mark_dirty(vault, loc.relpath)
-        # Sweep every view that surfaces this item (FORMAT.md §6): a row or
-        # line linking this page whose text equals the item's text.
-        removed = 0
-        removed_other = 0
-        tables = (
-            ("Next actions.md", vault.next_actions),
-            ("Delegated.md", vault.delegated),
-            ("Scheduled.md", vault.scheduled),
-        )
-        for table_name, table in tables:
-            if table is None or not table.has("project"):
-                continue
-            keep = []
-            for entry in table.entries:
-                link_name = projectsmod.parse_link(table.cell(entry.cells, "project"))
-                if link_name and entry.cells[0].strip() == item.text:
-                    link = projectsmod.resolve_link(link_name, vault.project_index)
-                    if link.resolved == page.path:
-                        if table_name == "Next actions.md":
-                            removed += 1
-                        else:
-                            removed_other += 1
-                        mark_dirty(vault, table_name)
-                        continue
-                keep.append(entry)
-            table.entries = keep
-        for relpath, lf in vault.ticklers.items():
-            keep_order = []
-            for entry in lf.order:
-                if entry is not None:
-                    body, link_name = linesmod.split_project_link(entry.text)
-                    if link_name and body.strip() == item.text:
-                        link = projectsmod.resolve_link(link_name, vault.project_index)
-                        if link.resolved == page.path:
-                            removed_other += 1
-                            mark_dirty(vault, relpath)
-                            continue
-                keep_order.append(entry)
-            lf.order = keep_order
+        removed, removed_other = _sweep_surfacing(vault, page, item.text)
         payload["removed_other_rows"] = removed_other
         payload["removed_next_action_rows"] = removed
         return OpResult(f'Completed "{loc.text}"', set(vault.dirty), payload)
@@ -671,17 +683,105 @@ def update(vault: Vault, today: date, *, handle: str, **fields) -> OpResult:
     if loc.domain == "line":
         loc.obj.text = new_text
     else:
+        # Re-word the rows surfacing this item too, or the rename would turn
+        # every one of them into a row-mismatch (§6).
+        for relpath, container, entry in list(_surfacing_entries(vault, loc.container, loc.obj.text)):
+            if hasattr(container, "entries"):
+                entry.cells[0] = new_text
+                entry.source_line = None
+            else:
+                entry.text = linesmod.format_with_project(new_text, _trailing_link_name(entry.text))
+            mark_dirty(vault, relpath)
         loc.container.lines[loc.obj.line_index] = f"{loc.obj.marker} [{'x' if loc.obj.checked else ' '}] {new_text}"
         loc.obj.text = new_text
     mark_dirty(vault, loc.relpath)
     return OpResult(f'Updated "{loc.text}" -> "{new_text}"', set(vault.dirty))
 
 
+def _trailing_link_name(text: str) -> str | None:
+    """The project name of a line's trailing `[[link]]`, or None."""
+    return linesmod.split_project_link(text)[1]
+
+
 def delete(vault: Vault, today: date, *, handle: str) -> OpResult:
+    """Remove an item. Deleting a project's action also removes every row
+    surfacing it (§6) — the step is gone, so its view rows would only be
+    reported as mismatches."""
     loc = _locate(vault, handle)
+    payload: dict = {}
+    if loc.domain == "project":
+        removed, removed_other = _sweep_surfacing(vault, loc.container, loc.obj.text)
+        payload = {"removed_next_action_rows": removed, "removed_other_rows": removed_other}
     _remove(loc)
     mark_dirty(vault, loc.relpath)
-    return OpResult(f'Deleted "{loc.text}"', set(vault.dirty))
+    return OpResult(f'Deleted "{loc.text}"', set(vault.dirty), payload)
+
+
+ROUTE_TARGETS = ("next-actions", "delegated", "scheduled", "tickler")
+
+
+def route_project_action(
+    vault: Vault,
+    today: date,
+    *,
+    handle: str,
+    to: str,
+    person: str | None = None,
+    chase_by: str | None = None,
+    date: str | None = None,
+    deadline: str | None = None,
+    priority=None,
+    bucket: str | None = None,
+) -> OpResult:
+    """Surface a project's action in a different view, keeping it on the page.
+
+    A project step is an ordinary action: it can be on my plate, waiting on
+    someone, tied to a date or parked in the tickler. The checkbox on the
+    project page stays where it is (the page is the plan); what changes is
+    the row that surfaces it (§6). Every existing surfacing row is removed
+    and one is written to `to` (`next-actions`, `delegated`, `scheduled` or
+    `tickler` with `bucket`), linked back to the project so ticking it off
+    there ticks the checkbox too. A priority the old row carried moves with
+    it unless one is given.
+    """
+    loc = _locate(vault, handle)
+    if loc.domain != "project":
+        raise OpError("route_project_action: handle is not a project item")
+    page, item = loc.container, loc.obj
+    if item.checked:
+        raise OpError(f"route_project_action: {item.text!r} is already ticked off")
+    if to not in ROUTE_TARGETS:
+        raise OpError(f"route_project_action: 'to' must be one of {list(ROUTE_TARGETS)}, not {to!r}")
+
+    old = list(_surfacing_entries(vault, page, item.text))
+    if priority is None:
+        for _relpath, container, entry in old:
+            if hasattr(container, "entries") and container.cell(entry.cells, "priority"):
+                priority = container.cell(entry.cells, "priority")
+                break
+
+    # Write the new row before the old ones go, so a bad argument (a missing
+    # person, an unreadable date) never leaves the step unsurfaced.
+    stem = page.stem
+    if to == "next-actions":
+        result = add_next_action(vault, today, action=item.text, project=stem, deadline=deadline, priority=priority)
+    elif to == "delegated":
+        if not (person or "").strip():
+            raise OpError("route_project_action: delegating needs a person")
+        result = delegate(
+            vault, today, thing=item.text, person=person, chase_by=chase_by, priority=priority, project=stem,
+        )
+    elif to == "scheduled":
+        if not date:
+            raise OpError("route_project_action: scheduling needs a date")
+        result = schedule(vault, today, thing=item.text, date=date, project=stem)
+    else:
+        result = add_to_tickler(vault, today, bucket=bucket or "Next week", text=item.text, project=stem)
+
+    removed, removed_other = _drop_entries(vault, old)
+    payload = dict(result.payload)
+    payload.update({"removed_next_action_rows": removed, "removed_other_rows": removed_other})
+    return OpResult(f'Routed "{item.text}" ({stem}) to {to}', set(vault.dirty), payload)
 
 
 # --- projects ---
@@ -895,6 +995,119 @@ def set_project_goal(vault: Vault, today: date, *, project: str, goal: str) -> O
     )
 
 
+_BAD_NAME_CHARS = set('/\\[]#|^:*?"<>')
+
+
+def _rewrite_links(text: str, old: str, new: str) -> str:
+    """Every `[[old]]`, `[[folder/old]]`, `[[old#h]]` or `[[old|alias]]` in
+    `text` pointing at `old` (case-insensitive, §6) -> the same link to `new`."""
+    pattern = re.compile(
+        r"\[\[(?:[^\]|#]*/)?" + re.escape(old) + r"\s*((?:#|\\?\|)[^\]]*)?\]\]",
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda m: f"[[{new}{m.group(1) or ''}]]", text)
+
+
+def rename_project(vault: Vault, today: date, *, project: str, new_name: str) -> OpResult:
+    """Rename a project page and every link to it.
+
+    The file moves to `<same folder>/<new_name>.md`, and every `[[old]]` link
+    in the managed files — Next actions/Delegated/Scheduled cells, Inbox and
+    Tickler lines, and the prose of every active project page — is rewritten
+    to `[[new_name]]` (alias and heading kept), the way Obsidian does on a
+    rename. Links in files automation does not manage (Reference/, Done/) are
+    left alone and counted in the payload as `unmanaged_links`.
+    """
+    stem = resolve_project_stem(vault, project)
+    page, relpath = _find_loaded_project(vault, stem)
+    new_v = " ".join(new_name.split())
+    if not new_v:
+        raise OpError("rename_project: new_name must not be blank")
+    bad = sorted(set(new_v) & _BAD_NAME_CHARS)
+    if bad or new_v.startswith("."):
+        raise OpError(f"rename_project: {new_v!r} is not a usable file name ({' '.join(bad) or 'leading dot'})")
+    if new_v == stem:
+        raise OpError(f"rename_project: the project is already called {stem!r}")
+    if new_v.lower() != stem.lower() and new_v.lower() in vault.project_index:
+        raise OpError(f"rename_project: a project named {new_v!r} already exists")
+
+    old_path = page.path
+    new_path = old_path.with_name(f"{new_v}.md")
+    new_relpath = str(new_path.relative_to(vault.root))
+
+    rewritten = 0
+    for table_name, table in (
+        ("Next actions.md", vault.next_actions), ("Delegated.md", vault.delegated), ("Scheduled.md", vault.scheduled),
+    ):
+        if table is None:
+            continue
+        for entry in table.entries:
+            cells = [_rewrite_links(c, stem, new_v) for c in entry.cells]
+            if cells != entry.cells:
+                entry.cells = cells
+                entry.source_line = None
+                rewritten += 1
+                mark_dirty(vault, table_name)
+    for lf in [vault.inbox, *vault.ticklers.values()]:
+        if lf is None:
+            continue
+        for entry in lf.items:
+            text = _rewrite_links(entry.text, stem, new_v)
+            if text != entry.text:
+                entry.text = text
+                rewritten += 1
+                mark_dirty(vault, lf.relpath)
+    for other_relpath, other in vault.projects.items():
+        lines = [_rewrite_links(line, stem, new_v) for line in other.lines]
+        if lines != other.lines:
+            rewritten += sum(a != b for a, b in zip(lines, other.lines))
+            other.lines = lines
+            mark_dirty(vault, other_relpath)
+
+    unmanaged = 0
+    managed = {str(p.path) for p in vault.projects.values()}
+    link_re = re.compile(r"\[\[(?:[^\]|#]*/)?" + re.escape(stem) + r"\s*(?:[#|\\][^\]]*)?\]\]", re.IGNORECASE)
+    for md in vault.root.rglob("*.md"):
+        rel = md.relative_to(vault.root)
+        if rel.parts[0].startswith(".") or str(md) in managed or rel.parent == Path(".") or rel.parts[0] == "Tickler":
+            continue
+        try:
+            unmanaged += len(link_re.findall(md.read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError):
+            continue
+
+    # Move the page: write it (with any edits made earlier in this run) to
+    # the new path, drop the old file, and re-key the loaded vault so later
+    # ops in the same run find it under its new name.
+    if new_v.lower() == stem.lower():
+        # A case-only rename: on a case-insensitive filesystem the two paths
+        # are one file, so rename it rather than write-then-unlink.
+        write_raw(RawFile(old_path, page.lines, page.trailing_newline))
+        old_path.rename(new_path)
+    else:
+        write_raw(RawFile(new_path, page.lines, page.trailing_newline))
+        old_path.unlink()
+    page.path = new_path
+    page.stem = new_v
+    vault.projects.pop(relpath)
+    vault.projects[new_relpath] = page
+    vault.dirty.discard(relpath)
+    mark_dirty(vault, new_relpath)
+    paths = [p for p in vault.project_index.get(stem.lower(), []) if p != old_path]
+    if paths:
+        vault.project_index[stem.lower()] = paths
+    else:
+        vault.project_index.pop(stem.lower(), None)
+    vault.project_index.setdefault(new_v.lower(), []).append(new_path)
+
+    changed = set(vault.dirty) | {relpath, new_relpath}
+    return OpResult(
+        f'Renamed project "{stem}" to "{new_v}"',
+        changed,
+        {"old_path": relpath, "new_path": new_relpath, "rewritten_links": rewritten, "unmanaged_links": unmanaged},
+    )
+
+
 def tick_project_action(vault: Vault, today: date, *, handle: str) -> OpResult:
     loc = _locate(vault, handle)
     if loc.domain != "project":
@@ -923,9 +1136,17 @@ def archive_project(vault: Vault, today: date, *, name: str) -> OpResult:
     dst_path = done_dir / src_path.name
     if dst_path.exists():
         raise OpError(f"archive_project: {dst_path.relative_to(vault.root)} already exists")
+    page = vault.projects.pop(src_relpath, None)
+    if page is not None and src_relpath in vault.dirty:
+        # Edits made earlier in the same run (a step ticked off on the sheet
+        # before the project itself was) travel with the page.
+        write_raw(RawFile(src_path, page.lines, page.trailing_newline))
+    vault.dirty.discard(src_relpath)
     src_path.rename(dst_path)
     dst_relpath = str(dst_path.relative_to(vault.root))
-    vault.projects.pop(src_relpath, None)
+    vault.project_index[stem.lower()] = [
+        dst_path if p == src_path else p for p in vault.project_index.get(stem.lower(), [])
+    ]
 
     removed = 0
     if vault.next_actions is not None:

@@ -50,7 +50,8 @@ tomorrow's brief or maintenance run will do.
 **Write:** `capture`, `add_next_action`, `delegate`, `schedule`,
 `add_to_tickler`, `triage`, `complete`, `update`, `delete`, `create_project`,
 `add_project_action`, `append_project_note`, `set_project_goal`,
-`tick_project_action`, `archive_project`.
+`tick_project_action`, `archive_project`, `rename_project`,
+`route_project_action`.
 
 **Housekeeping:** `run_maintenance`.
 
