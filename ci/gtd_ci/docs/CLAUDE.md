@@ -177,7 +177,7 @@ invites encoding corruption and gives you nothing to diff.
 
 The nightly job lives in [`gtd-engine`](https://github.com/charlesbaynham/gtd-engine),
 not in this vault. This vault's `.github/workflows/nightly-maintenance.yml` (or
-`.gitlab-ci.yml`) is a thin caller that pulls the engine at tag `v1` and runs
+`.gitlab-ci.yml`) is a thin caller that pulls the engine at branch `v2` and runs
 it here. It does five things in order:
 
 1. **expire** — dated tickler lines, scheduled rows and delegated chase-bys
@@ -191,7 +191,7 @@ it here. It does five things in order:
 Run it yourself:
 
 ```bash
-pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@v1#subdirectory=ci"
+pip install "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@v2#subdirectory=ci"
 python -m gtd_ci run --dry-run --today "$(date +%F)"   # writes nothing
 python -m gtd_ci run --today "$(date +%F)"
 ```
