@@ -129,7 +129,7 @@ def _max_pending(args) -> int:
 
 
 def ink(rmdoc: Path) -> tuple[int, int]:
-    """``(strokes read, stroke layers present)`` on a downloaded sheet.
+    """``(strokes read, layers whose ink would not parse)`` on a downloaded sheet.
 
     A sheet the tablet is still holding comes back byte-identical to the one
     we uploaded: no ``.rm`` layers at all. That is the only evidence we get
@@ -137,16 +137,32 @@ def ink(rmdoc: Path) -> tuple[int, int]:
     the ink locally while the cloud copy stays pristine — so it is what
     decides whether a sheet is finished with or still live.
 
-    The two counts are separate because ``parse_annotations`` reports an
-    unreadable layer by returning nothing. Layers with no strokes in them is
-    "this sheet has been written on and we cannot read it", which is a failure
-    to shout about, not a sheet to go on waiting for.
+    ⚠️ An erased stroke is not an unreadable one. The tablet records an erasure
+    as a line item with no value, so a sheet written on and then rubbed out
+    parses cleanly and simply has nothing left on it — "layers but no strokes"
+    is not evidence the ink could not be read. Only a layer that raises
+    ``UnreadableLayer`` is "written on and we cannot read it", which is a
+    failure to shout about rather than a sheet to go on waiting for. Counting
+    erasures as unreadable wedged the pipeline for 13 hourly runs on
+    2026-09-24: the sheet is deliberately left on the device, so the same
+    failure repeated with no way to clear itself.
     """
-    from remarkable_gtd.rm.annotations import extract_from_rmdoc, parse_annotations
+    from remarkable_gtd.rm.annotations import (
+        UnreadableLayer,
+        extract_from_rmdoc,
+        read_annotations,
+    )
 
     _pdf, rm_by_page = extract_from_rmdoc(rmdoc)
-    layers = [b for b in rm_by_page.values() if b]
-    return sum(len(parse_annotations(b)) for b in layers), len(layers)
+    strokes = unreadable = 0
+    for blob in rm_by_page.values():
+        if not blob:
+            continue
+        try:
+            strokes += len(read_annotations(blob))
+        except UnreadableLayer:
+            unreadable += 1
+    return strokes, unreadable
 
 
 def _scan_cfg(ocr: str):
@@ -243,16 +259,16 @@ def cmd_process(args) -> int:
         print(f"→ {remote}")
         try:
             rmdoc = rm.download(remote, work)
-            strokes, layers = ink(rmdoc)
+            strokes, unreadable = ink(rmdoc)
         except Exception as exc:  # a broken sheet stays on the device for a human to look at
             print(f"  ✗ {exc}", file=sys.stderr)
             results.append(SheetResult(name, scanned=False, error=str(exc)))
             failed += 1
             continue
-        if not strokes and layers:
+        if not strokes and unreadable:
             # Written on, but the strokes will not parse. Don't wait on this
             # sheet as if it were blank — say so and leave it for a human.
-            exc = f"{layers} stroke layer(s) on the sheet but none could be read"
+            exc = f"{unreadable} stroke layer(s) on the sheet but none could be read"
             print(f"  ✗ {exc}", file=sys.stderr)
             results.append(SheetResult(name, scanned=False, error=exc))
             failed += 1
