@@ -69,22 +69,28 @@ def _fake_rmapi(tmp_path: Path, monkeypatch, device: Path) -> Path:
     return log
 
 
-def _pack_rmdoc(pdf: Path, out: Path, *, strokes: bool = False) -> None:
+def _pack_rmdoc(pdf: Path, out: Path, *, strokes: bool = False, erased: bool = False) -> None:
     """A minimal .rmdoc: the untouched PDF plus a .content.
 
     With ``strokes=True`` a real v6 ``.rm`` layer holding one line is written
     for page 0, which is what makes the sheet look written-on to `process`.
+    ``erased=True`` writes the same layer with the stroke rubbed out instead.
     """
+    layer = strokes or erased
     with zipfile.ZipFile(out, "w") as z:
-        pages = [{"id": "page-uuid", "redir": {"value": 0}}] if strokes else []
+        pages = [{"id": "page-uuid", "redir": {"value": 0}}] if layer else []
         z.writestr("doc-uuid.content", json.dumps({"cPages": {"pages": pages}}))
         z.write(pdf, "doc-uuid.pdf")
-        if strokes:
-            z.writestr("doc-uuid/page-uuid.rm", _one_stroke_rm())
+        if layer:
+            z.writestr("doc-uuid/page-uuid.rm", _one_stroke_rm(erased=erased))
 
 
-def _one_stroke_rm() -> bytes:
-    """A v6 ``.rm`` file with a single short line, built with rmscene."""
+def _one_stroke_rm(*, erased: bool = False) -> bytes:
+    """A v6 ``.rm`` file with a single short line, built with rmscene.
+
+    ``erased=True`` records it the way the tablet records a rubbed-out stroke:
+    the item survives with no value and the point count in ``deleted_length``.
+    """
     from rmscene import CrdtId, CrdtSequenceItem, SceneLineItemBlock, write_blocks
     from rmscene.scene_items import Line, Pen, PenColor, Point
 
@@ -96,7 +102,9 @@ def _one_stroke_rm() -> bytes:
         starting_length=0.0,
     )
     item = CrdtSequenceItem(
-        item_id=CrdtId(1, 10), left_id=CrdtId(0, 0), right_id=CrdtId(0, 0), deleted_length=0, value=line
+        item_id=CrdtId(1, 10), left_id=CrdtId(0, 0), right_id=CrdtId(0, 0),
+        deleted_length=len(line.points) if erased else 0,
+        value=None if erased else line,
     )
     buf = BytesIO()
     write_blocks(buf, [SceneLineItemBlock(parent_id=CrdtId(0, 1), item=item)])
@@ -253,6 +261,25 @@ def test_unreadable_strokes_are_a_failure_not_a_wait(vault_root, tmp_path, monke
     assert processed["sheets"] == [] and processed["pending"] == []
     status = (vault_root / "reMarkable status.md").read_text()
     assert "none could be read" in status
+
+
+def test_an_erased_sheet_is_blank_not_broken(vault_root, tmp_path, monkeypatch):
+    """Written on and rubbed out reads cleanly and has no ink, so the sheet waits
+    like any blank one. Calling it unreadable failed the run and left the sheet
+    on the device, so the same failure repeated hourly and could not self-clear."""
+    device = tmp_path / "device" / "GTD Daily"
+    device.mkdir(parents=True)
+    _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
+    work = tmp_path / "work"
+
+    assert main(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
+    _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc", erased=True)
+
+    assert main(["process", "--vault", str(vault_root), "--work-dir", str(work),
+                 "--today", "2026-09-15", "--ocr", "null"]) == 0
+    processed = json.loads((work / "processed.json").read_text())
+    assert processed["sheets"] == [] and processed["pending"] == ["20260914Z0330_gtd_sheet"]
+    assert "none could be read" not in (vault_root / "reMarkable status.md").read_text()
 
 
 def test_max_pending_allows_a_bounded_pile(vault_root, tmp_path, monkeypatch):
