@@ -445,6 +445,13 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
         return do_write(ctx, opsmod.set_project_goal, dry_run, project=project, goal=goal)
 
     @mcp.tool()
+    def star_project(ctx: Context, project: str, starred: bool = True, dry_run: bool = False) -> dict:
+        """Star (or, with starred=false, unstar) a project: sets `starred:
+        true` in its page's front matter. Starred projects sort first on the
+        reMarkable sheet and get a link in the hotbar of every page."""
+        return do_write(ctx, opsmod.star_project, dry_run, project=project, starred=starred)
+
+    @mcp.tool()
     def tick_project_action(ctx: Context, handle: str, dry_run: bool = False) -> dict:
         """Tick a project checkbox item without touching Next actions.md.
         Use `complete` instead when the item also has a row there."""

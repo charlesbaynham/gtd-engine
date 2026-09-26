@@ -21,7 +21,8 @@ Everything in the vault stays plain markdown that renders in stock Obsidian.
 
 A managed file starts with a YAML front-matter block: line 1 is exactly `---`,
 the block ends at the next line that is exactly `---`. The block is preserved
-verbatim; the only key automation reads is `gtd`.
+verbatim; the only keys automation reads are `gtd` and, on a project page,
+`starred` (§6).
 
 | File | `gtd:` | Kind |
 |---|---|---|
@@ -246,6 +247,13 @@ A **project page** is any `.md` under `Project details/` that is not under
 Actions` (level-2 heading, text matched trimmed and case-insensitively).
 Files without that heading are ignored by automation.
 
+A project page is **starred** when its front matter (§2) has `starred:` set
+to `true` (also `yes`/`on`/`1`, case-insensitive; Obsidian writes `true`
+for a checkbox property). Anything else, or no front matter, is unstarred.
+Starring is a presentation hint and nothing more: a starred project sorts
+first on the reMarkable sheet and is linked from the hotbar at the top of
+every page. No job reads it and lint never reports it.
+
 The **Next Actions section** runs from that heading to the next heading of
 level 1 or 2, or end of file. Its **items** are the lines in that section
 matching `^[-*] \[( |x|X)\] (.*)$` — top-level only; indented lines are notes
@@ -311,6 +319,13 @@ Writes to project pages:
   surfacing it with one row in the target view — Next actions, Delegated,
   Scheduled or a Tickler file — that links this page. The new row is
   written before the old ones are removed.
+
+- **Starring** a project sets its front-matter line to exactly
+  `starred: true`, replacing an existing `starred:` line or, if there is
+  none, adding it as the block's last line; a page with no front matter
+  gains a block `---` / `starred: true` / `---` at line 1. **Unstarring**
+  removes the `starred:` line, and the whole block if nothing else was in
+  it. Every other front-matter line is kept verbatim.
 
 - **Renaming** a project moves the page to `<new name>.md` in the same
   folder and rewrites every link to it (`[[old]]`, `[[old|alias]]`,

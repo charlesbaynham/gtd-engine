@@ -217,6 +217,7 @@ def project(
         "stem": page.stem,
         "path": relpath,
         "goal": goal,
+        "starred": projectsmod.is_starred(page.lines),
         "status_lines": status_lines,
         "items": items,
         "next_action": next_action,

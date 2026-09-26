@@ -43,6 +43,7 @@ def test_build_tasks_projects(vault):
 
     boiler, wedding = projects
     assert wedding["goal"] == "Get married" and wedding["status"] == ["\u2705 Venue booked"]
+    assert boiler["starred"] is False and wedding["starred"] is False
     assert wedding["items"] == [
         {"text": "Read Ben's paper", "done": False, "handle": wedding["items"][0]["handle"], "surfaced": "next"},
         {"text": "Pay Sandra", "done": False, "handle": wedding["items"][1]["handle"], "surfaced": None},

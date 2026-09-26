@@ -358,7 +358,7 @@ def _execute_one(vault: Vault, today: date, task: dict, task_id: str, bucket: st
 
     if bucket == "projhead" and name in ("update", "delete", "move"):
         raise _OpWarning(
-            f"{name!r} on the project row — use rename_project / set_project_goal / archive_project"
+            f"{name!r} on the project row — use rename_project / set_project_goal / archive_project / star_project"
         )
     if bucket == "projhead" and name == "complete":
         name = "archive_project"  # ✓ on the project itself: the whole project is done
@@ -376,6 +376,9 @@ def _execute_one(vault: Vault, today: date, task: dict, task_id: str, bucket: st
 
     if name == "archive_project":
         return ops.archive_project(vault, today, name=existing_project())
+
+    if name in ("star_project", "unstar_project"):
+        return ops.star_project(vault, today, project=existing_project(), starred=name == "star_project")
 
     if name == "update":
         kwargs: dict = {}
@@ -803,9 +806,10 @@ def _apply_project_head(vault: Vault, today: date, decision: dict, task: dict, t
                         report: ApplyReport) -> None:
     """A project page's project row: the project itself.
 
-    NEW GOAL rewrites the goal, RENAME TO renames the page and every link
-    to it, ✓ Finish archives the project to ``Done/`` — in that order, so a
-    project can be re-goaled, renamed and finished on one sheet. Runs after
+    ★ flips the star the project was printed with, NEW GOAL rewrites the
+    goal, RENAME TO renames the page and every link to it, ✓ Finish archives
+    the project to ``Done/`` — in that order, so a project can be starred,
+    re-goaled, renamed and finished on one sheet. Runs after
     every other row of the sheet (``apply_decisions``), so the steps ticked
     or routed on the same page are applied to the page before it moves.
     """
@@ -823,6 +827,15 @@ def _apply_project_head(vault: Vault, today: date, decision: dict, task: dict, t
     if "name" in fields and not new_name:
         report.warnings.append(f"{task_id}: ink in RENAME TO but nothing legible was transcribed — name unchanged")
 
+    if decision.get("star"):
+        # The box printed ★ Star on an unstarred project, ☆ Unstar on a
+        # starred one: set the opposite of what was printed, not a blind
+        # toggle, so a star changed elsewhere since printing is not undone.
+        try:
+            r = ops.star_project(vault, today, project=stem, starred=not task.get("starred"))
+            report.applied.append(f"{label}: {r.summary}")
+        except ops.OpError as exc:
+            report.warnings.append(f"{task_id}: star not changed — {exc}")
     if goal:
         try:
             r = ops.set_project_goal(vault, today, project=stem, goal=goal)
@@ -848,7 +861,7 @@ def _apply_project_head(vault: Vault, today: date, decision: dict, task: dict, t
         except ops.OpError as exc:
             report.warnings.append(f"{task_id}: project not archived — {exc}")
     elif action != "none":
-        report.warnings.append(f"{task_id}: the project row only takes ✓ Finish and ✦ AI — {action!r} ignored")
+        report.warnings.append(f"{task_id}: the project row only takes ✓ Finish, ★ and ✦ AI — {action!r} ignored")
 
 
 # --- one scanned row ----------------------------------------------------------------
