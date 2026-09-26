@@ -8,6 +8,7 @@ from datetime import date
 import pytest
 
 from gtd_ci.model import load_vault, save_vault
+from gtd_mcp import ops
 from gtd_remarkable.apply import apply_decisions, parse_handwritten_date
 from gtd_remarkable.tasks import build_tasks
 
@@ -37,9 +38,11 @@ def _tasks_doc(vault) -> dict:
         out[f"CP-{i:02d}"] = {"act": "", "bucket": "capture"}
     for i in range(1, 7):
         out[f"NP-{i:02d}"] = {"act": "", "bucket": "newproj"}
-    for pi, proj in enumerate(t["projects"], 1):
+    # starred projects print first (remarkable_gtd build_project_pages)
+    for pi, proj in enumerate(sorted(t["projects"], key=lambda p: not p["starred"]), 1):
         ref = f"P{pi:02d}"
-        out[f"{ref}-PJ"] = {"act": proj["name"], "bucket": "projhead", "proj": proj["name"], "goal": proj["goal"]}
+        out[f"{ref}-PJ"] = {"act": proj["name"], "bucket": "projhead", "proj": proj["name"], "goal": proj["goal"],
+                            "starred": proj["starred"]}
         for pos, item in enumerate(proj["items"], 1):
             if item["done"]:
                 continue  # printed struck through, no boxes
@@ -614,6 +617,51 @@ def test_ai_on_the_project_row_uses_project_ops(vault_root):
     report = apply_decisions(vault, TODAY, _proj_page(_ai_d("P02-PJ", _op("complete"))), doc)
     save_vault(vault)
     assert (vault_root / "Project details" / "Done" / "June wedding.md").exists()
+
+
+def test_project_row_star_flips_what_was_printed(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    assert doc["tasks"]["P02-PJ"]["starred"] is False
+    report = apply_decisions(vault, TODAY, _proj_page(_d("P02-PJ", star=True)), doc)
+    save_vault(vault)
+    assert _text(vault_root, "Project details/Wedding 2026.md").startswith("---\nstarred: true\n---\n")
+    assert report.applied == ["P02-PJ project 'Wedding 2026': Starred \"Wedding 2026\""] and not report.warnings
+
+    # printed starred now (and first): the same ☆ box unstars it
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    assert doc["tasks"]["P01-PJ"]["proj"] == "Wedding 2026" and doc["tasks"]["P01-PJ"]["starred"] is True
+    page = _decisions(_page("GTD|project-01|2026-09-15", [_d("P01-PJ", star=True)], bucket="project"))
+    apply_decisions(vault, TODAY, page, doc)
+    save_vault(vault)
+    assert not _text(vault_root, "Project details/Wedding 2026.md").startswith("---")
+
+
+def test_star_printed_on_a_project_starred_since_is_not_undone(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)  # printed unstarred
+    ops.star_project(vault, TODAY, project="Wedding 2026")  # starred elsewhere meanwhile
+    report = apply_decisions(vault, TODAY, _proj_page(_d("P02-PJ", star=True)), doc)
+    save_vault(vault)
+    assert _text(vault_root, "Project details/Wedding 2026.md").startswith("---\nstarred: true\n---\n")
+    assert "already starred" in report.applied[0]
+
+
+def test_ai_can_star_and_unstar(vault_root):
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    report = apply_decisions(vault, TODAY, _proj_page(_ai_d("P02-PJ", _op("star_project"))), doc)
+    save_vault(vault)
+    assert _text(vault_root, "Project details/Wedding 2026.md").startswith("---\nstarred: true\n---\n")
+    assert len(report.applied) == 1 and not report.warnings
+
+    vault = load_vault(vault_root)
+    doc = _tasks_doc(vault)
+    page = _decisions(_page("GTD|project-01|2026-09-15", [_ai_d("P01-PJ", _op("unstar_project"))], bucket="project"))
+    apply_decisions(vault, TODAY, page, doc)
+    save_vault(vault)
+    assert not _text(vault_root, "Project details/Wedding 2026.md").startswith("---")
 
 
 def test_ai_move_of_a_project_step_keeps_it_on_the_page(vault_root):

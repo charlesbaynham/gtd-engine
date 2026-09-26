@@ -8,7 +8,7 @@ key carries the project and person vocabulary the vision model is given
 when interpreting a ✦ AI row (see `gtd_remarkable.apply.ai_intent`).
 
 A top-level `projects` key carries one entry per active project page (name,
-goal, status lines, whether it is stalled, and every item with its handle and
+goal, whether it is starred, status lines, whether it is stalled, and every item with its handle and
 the view it is surfaced in), from which `remarkable-gtd` renders the
 read-only projects summary page and one page per project.
 """
@@ -124,6 +124,7 @@ def build_tasks(vault: Vault, today: date) -> dict:
             {
                 "name": p["stem"],
                 "goal": p.get("goal") or "",
+                "starred": bool(p.get("starred")),
                 "status": list(p.get("status_lines") or []),
                 "stalled": not any(not it["done"] and it["surfaced"] for it in items),
                 "items": items,

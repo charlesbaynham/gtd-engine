@@ -79,6 +79,50 @@ def goal_paragraph(lines: list[str]) -> tuple[int, int] | None:
     return start, i
 
 
+_TRUE = {"true", "yes", "on", "1"}
+
+
+def is_starred(lines: list[str]) -> bool:
+    """Whether the page's front matter says `starred: true` (§6). An unclosed
+    front-matter block reads as unstarred rather than failing the page."""
+    from .vault import ParseFailure, split_front_matter
+
+    try:
+        fm, _ = split_front_matter(lines)
+    except ParseFailure:
+        return False
+    return fm is not None and fm.values.get("starred", "").strip().strip("'\"").lower() in _TRUE
+
+
+def set_starred(lines: list[str], starred: bool) -> list[str]:
+    """`lines` with the front matter's `starred` key set (§6): `starred: true`
+    replaces the key's line or goes last in the block, creating a block at
+    line 1 if there is none; unstarring removes the line, and the block too
+    if nothing else is left in it. Every other front-matter line is kept
+    verbatim."""
+    from .vault import split_front_matter
+
+    fm, body_start = split_front_matter(lines)
+    if fm is None:
+        return ["---", "starred: true", "---", *lines] if starred else list(lines)
+    close = body_start - 1
+    key_lines = [i for i in range(1, close) if lines[i].partition(":")[0].strip() == "starred"]
+    out = list(lines)
+    if starred:
+        if key_lines:
+            out[key_lines[0]] = "starred: true"
+            for i in reversed(key_lines[1:]):
+                del out[i]
+        else:
+            out.insert(close, "starred: true")
+        return out
+    for i in reversed(key_lines):
+        del out[i]
+    if key_lines and all(not line.strip() for line in out[1 : close - len(key_lines)]):
+        del out[: close - len(key_lines) + 1]
+    return out
+
+
 def section_bounds(lines: list[str], heading_index: int) -> int:
     """End (exclusive) of the section opened at `heading_index`: the next
     level-1/2 heading, or EOF (§6, same bound for every level-2 section)."""

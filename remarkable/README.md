@@ -124,12 +124,16 @@ Projects summary, one page per project, and a New Projects page.
   its rows; ✦ AI as anywhere else.
 - **The project row** at the top of each project page stands for the
   project itself. Write a new name in RENAME TO (the page and every link to
-  it are renamed), a new goal in NEW GOAL, and tick ✓ Finish when the whole
+  it are renamed), a new goal in NEW GOAL, tick ★ Star (☆ Unstar on a
+  starred project) to pin it, and tick ✓ Finish when the whole
   project is done (its page moves to `Project details/Done/` and every row
-  surfacing it goes). They apply in that order and after every other row
+  surfacing it goes). They apply star, goal, name, finish in that order and after every other row
   on the sheet, so a step ticked on the same page lands before the page
   moves. ✦ AI on it hands the project to the agent (`rename_project`,
-  `set_project_goal`, `archive_project`).
+  `set_project_goal`, `archive_project`, `star_project`, `unstar_project`).
+- **Starred projects** (`starred: true` in the page's front matter, FORMAT.md
+  §6) print first, with a ★, and every page of the sheet carries a hotbar
+  under its header linking straight to each one.
 - **Tick ✦ AI and write anything in the row**: reword it, "→ Louise", "due
   Fri", "priority 8", "defer 1m", "drop", "done", "move to <project>",
   "back to inbox", "also add: ring the venue", "split this into three",
@@ -138,8 +142,8 @@ Projects summary, one page per project, and a New Projects page.
   returns a `gtd.ai/3` reading with a list of operations (`update`,
   `complete`, `delete`, `move`, `capture`, `add_next_action`, `delegate`,
   `schedule`, `add_to_tickler`, `create_project`, `add_project_action`,
-  `rename_project`, `set_project_goal`, `archive_project`),
-  applied in order. `OPENROUTER_AI_MODEL` picks the model for this call
+  `rename_project`, `set_project_goal`, `archive_project`, `star_project`,
+  `unstar_project`), applied in order. `OPENROUTER_AI_MODEL` picks the model for this call
   alone.
 
   **✦ AI switches the deterministic rules off for that row.** It is an

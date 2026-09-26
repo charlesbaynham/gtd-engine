@@ -44,6 +44,7 @@ __all__ = [
     "add_project_action",
     "append_project_note",
     "set_project_goal",
+    "star_project",
     "tick_project_action",
     "archive_project",
     "rename_project",
@@ -993,6 +994,25 @@ def set_project_goal(vault: Vault, today: date, *, project: str, goal: str) -> O
         set(vault.dirty),
         {"previous_goal": previous, "goal": "\n".join(body)},
     )
+
+
+def star_project(vault: Vault, today: date, *, project: str, starred: bool = True) -> OpResult:
+    """Star or unstar a project (§6: `starred: true` in its front matter).
+    A starred project sorts first and sits in the hotbar of the reMarkable
+    sheet. Setting the state it already has changes nothing."""
+    stem = resolve_project_stem(vault, project)
+    page, relpath = _find_loaded_project(vault, stem)
+    was = projectsmod.is_starred(page.lines)
+    verb = "Starred" if starred else "Unstarred"
+    if was == starred:
+        return OpResult(f'"{stem}" is already {verb.lower()}', set(), {"starred": starred, "changed": False})
+    try:
+        page.lines[:] = projectsmod.set_starred(page.lines, starred)
+    except ParseFailure as exc:
+        raise OpError(f"star_project: {relpath}: {exc}") from exc
+    _reparse_project(page)
+    mark_dirty(vault, relpath)
+    return OpResult(f'{verb} "{stem}"', set(vault.dirty), {"starred": starred, "changed": True})
 
 
 _BAD_NAME_CHARS = set('/\\[]#|^:*?"<>')
