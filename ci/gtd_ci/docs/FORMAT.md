@@ -37,6 +37,7 @@ verbatim; the only keys automation reads are `gtd` and, on a project page,
 | `Project details/**/*.md` | `project` (optional) | project page |
 | `CI status.md` | `ci-status` | written by CI, never read |
 | `reMarkable status.md` | `remarkable-status` | written by the reMarkable job, never read |
+| `.remarkable.json` | — | the reMarkable job's record of the newest sheet applied, §8.1 |
 
 CI finds managed files by these fixed paths and checks the `gtd` value; a
 mismatch or missing front matter is a parse failure for that file. The plugin
@@ -444,6 +445,13 @@ as `CI status.md`: front matter, a `Run:` line, then per sheet `# Sheet
 <name>` with `## Applied`, `## Skipped` and `## Warnings` lists (`- none`
 when empty). The job writes the vault only through the MCP operations
 (`gtd_mcp.ops`), so every edit it makes obeys §4–§6 by construction.
+
+`.remarkable.json` is the job's one piece of state:
+`{"last_applied": "<YYYY-MM-DDTHH:MM:SSZ>"}`, the render time of the newest
+sheet applied to the vault, or `null` before the first. It is committed with
+the edits that sheet produced, and no sheet rendered at or before it is read
+again. Never edit it; deleting it makes the next run treat every sheet in the
+device's archive as already applied.
 
 ## 9. Parse failures and safety
 

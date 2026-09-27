@@ -58,28 +58,47 @@ cloud copy stays byte-identical to the one that was uploaded — so from CI's
 side, "you have been offline for a week with a full sheet" and "you have not
 written on it yet" look exactly the same.
 
-So a sheet that comes back with no strokes on it is treated as *pending*:
+So nothing is ever decided from a blank sheet. Instead, **every run sweeps
+every sheet not yet applied**, in `GTD Daily` and in `GTD Daily/Archive`, and
+applies the ink on any of them, however old the sheet is.
 
-- it is **not scanned** (no OCR, no vision calls, nothing to apply),
-- it is **not archived** and never reaches the rotation that deletes old
-  sheets, so it cannot be deleted out from under the tablet,
-- and `publish` **does not upload another sheet on top of it**
-  (`--max-pending` / `REMARKABLE_MAX_PENDING`, default 1).
+That lets the device stay current, so the pipeline can run hourly:
 
-Turn WiFi back on, let the tablet sync, and the next run reads the sheet you
-actually wrote on, applies it, archives it, and publishes a fresh one.
+- **The sheet follows the vault.** When the vault no longer matches what the
+  current sheet prints (a new item, a change, or simply a new day), `publish`
+  moves the sheet to the archive and uploads a fresh one. If nothing changed,
+  nothing is uploaded.
+- **Late ink still lands.** Moving a document in the cloud while the tablet
+  holds unsynced strokes for it is safe. The tablet syncs by document id, not
+  by folder, so when WiFi comes back the ink arrives on the document in the
+  archive, with no conflict copy. This was tested on a real device on
+  2026-09-27. The next run applies it against the tasks that sheet was
+  printed with. A row whose item has since changed in the vault is re-found
+  by its text, or reported.
+- **Applied sheets are never applied twice.** Every sheet is named for the
+  moment it was rendered, to the second (`20260927T173012Z_gtd_sheet`, UTC).
+  The vault records the stamp of the newest sheet applied so far in
+  `.remarkable.json`, committed together with the edits it produced. A sheet
+  stamped at or before it is never read again. Nothing on the device is
+  renamed.
 
-A blank sheet is retired — archived, and eventually rotated away — only once a
-**newer** sheet comes back with ink on it. That is proof the tablet has synced
-since the blank one was uploaded, so its blankness is real. Rotation also
-never deletes a sheet in the same run that archived it: the `--keep-days`
-grace period is keyed on the upload date in the name, and a sheet rescued
-after a long offline spell is already "old" by then.
+The archive is cleared of:
 
-If sheets were archived by an earlier version while your tablet was offline,
-move them back into `GTD Daily` on the device (or in the reMarkable app) and
-the next run will pick them up. Don't re-run a sheet that has already been
-applied — the vault edits are not idempotent.
+- every sheet rendered **before a later sheet came back with ink**, since that
+  ink proves the tablet synced after they were replaced, and
+- every sheet rendered more than **a week** ago
+  (`--keep-days` / `REMARKABLE_KEEP_DAYS`, default 7, 0 keeps them all).
+
+Both rules can delete ink that has not reached the cloud: writing on an old
+sheet while offline, after a later sheet has already come back inked or after
+a week has passed. So can a sheet that failed to read, once a later one is
+applied or it is a week old; the failure is reported in `reMarkable status.md`
+on every run until then.
+
+**Upgrading from an earlier version:** the first run finds no
+`.remarkable.json` and takes every sheet already in the archive as applied,
+since an earlier version only archived sheets it had applied or found blank.
+It records that and clears them, so nothing is applied twice.
 
 ## Writing on the sheet
 

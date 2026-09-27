@@ -19,10 +19,10 @@
 #                        (default off: it reads glyphs, and reasoning there
 #                        costs ~44% of the call for no measured gain)
 #   REMARKABLE_FOLDER    optional — default "GTD Daily"
-#   REMARKABLE_ARCHIVE_FOLDER optional — default "<REMARKABLE_FOLDER>/Archive"
-#   REMARKABLE_KEEP_DAYS optional — archived sheets older than this are deleted (default 3)
-#   REMARKABLE_MAX_PENDING optional — how many un-written sheets may sit on the
-#                        device before publish stops adding more (default 1, minimum 1)
+#   REMARKABLE_ARCHIVE_FOLDER optional — default "<REMARKABLE_FOLDER>/Archive"; its
+#                        unapplied sheets are still read on every run
+#   REMARKABLE_KEEP_DAYS optional — archived sheets uploaded more than this many
+#                        days ago are deleted (default 7; 0 keeps all)
 #   REMARKABLE_GTD_REF   optional — overrides the remarkable-gtd commit the engine pins
 #
 # GTD_ENGINE_REF pins which gtd-engine tag/ref every pip install below uses;
@@ -78,15 +78,18 @@ maintain:
 remarkable:
   # Read back yesterday's sheet from the reMarkable, apply the handwritten
   # decisions to the vault, push, then upload today's sheet. Steps:
-  #   process  — download every sheet in the folder, render strokes, scan,
-  #              apply; writes remarkable-out/processed.json + status page
+  #   process  — download every unapplied sheet in the folder and its archive,
+  #              render strokes, scan, apply; writes remarkable-out/processed.json
+  #              + status page
   #   (push)   — the vault changes land before anything is archived, so a
   #              failed push just means the sheet is processed again next time
-  #   publish  — archive the processed sheets on the device, drop archived
-  #              sheets older than REMARKABLE_KEEP_DAYS, render + upload
-  # A sheet that comes back with no ink on it is left alone — neither scanned
-  # nor archived — and publish uploads nothing on top of it: an offline tablet
-  # holds your ticks locally, so a pristine cloud copy proves nothing.
+  #   publish  — move applied sheets to the archive, replace the current sheet
+  #              if the vault no longer matches it, clear archived sheets older
+  #              than the newest applied one (recorded in .remarkable.json) or
+  #              than REMARKABLE_KEEP_DAYS
+  # A blank cloud copy proves nothing (an offline tablet holds your ticks
+  # locally), so replaced sheets are still read from the archive on every run;
+  # the ink follows the document there when the tablet syncs.
   stage: remarkable
   needs: [maintain]
   rules:

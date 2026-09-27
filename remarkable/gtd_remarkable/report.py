@@ -21,8 +21,8 @@ class SheetResult:
     ``pending`` marks a sheet that came back with no ink on it: it was neither
     scanned nor archived, because a tablet that has been offline for days looks
     exactly the same from the cloud as one you simply have not written on yet.
-    ``retired`` marks one of those that a later, inked sheet has since proven
-    really was blank.
+    ``archived`` marks one of those that a newer sheet has already replaced;
+    it sits in the archive and is read again on every run.
     """
 
     name: str
@@ -31,7 +31,7 @@ class SheetResult:
     apply: ApplyReport | None = None
     error: str | None = None
     pending: bool = False
-    retired: bool = False
+    archived: bool = False
 
 
 def sheet_counts(decisions: dict, base: dict | None = None) -> dict:
@@ -57,30 +57,25 @@ def _section(title: str, lines: list[str]) -> list[str]:
     return out
 
 
-def render_status(results: list[SheetResult], run_label: str, today: str) -> str:
+def render_status(results: list[SheetResult], run_label: str, today: str, archive_folder: str = "") -> str:
     lines = ["---", "gtd: remarkable-status", "---", "# reMarkable status", "",
              f"Run: {run_label} (today = {today})", ""]
-    if not results:
-        lines += ["No sheet was waiting on the device.", ""]
-    for r in results:
+    where = f"`{archive_folder}`" if archive_folder else "the archive"
+    waiting = [r for r in results if r.pending and r.archived]
+    shown = [r for r in results if not (r.pending and r.archived)]
+    if not shown:
+        lines += ["No new sheet was waiting on the device.", ""]
+    for r in shown:
         lines += [f"# Sheet {r.name}", ""]
         if r.error:
             lines += _section("Error", [r.error])
             continue
         if r.pending:
             lines += [
-                "Nothing written on it yet, so it has been left on the device untouched "
-                "— and no new sheet is published while it is there. If your tablet has "
-                "been offline, your ink is safe on it: turn WiFi on, let it sync, and the "
-                "next run will read it. (Raise `--max-pending` if you want a fresh sheet "
-                "anyway.)",
-                "",
-            ]
-            continue
-        if r.retired:
-            lines += [
-                "Never written on. A later sheet came back inked, which proves the tablet "
-                "synced after this one was uploaded, so it has been archived.",
+                "Nothing written on it yet, as far as the cloud knows. When the vault "
+                f"changes it is replaced and moves to {where}, which is still read on every "
+                "run: if your tablet has been offline, your ink is safe on it and will be "
+                "applied as soon as it syncs.",
                 "",
             ]
             continue
@@ -97,6 +92,13 @@ def render_status(results: list[SheetResult], run_label: str, today: str) -> str
             lines += _section("Notes", r.apply.notes)
             lines += _section("Skipped", r.apply.skipped)
             lines += _section("Warnings", r.apply.warnings)
+    if waiting:
+        lines += [
+            f"# Archived, not written on yet ({len(waiting)})",
+            "",
+            f"Still read on every run from {where}; ink that syncs later is applied then.",
+            "",
+        ] + [f"- {r.name}" for r in waiting] + [""]
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
