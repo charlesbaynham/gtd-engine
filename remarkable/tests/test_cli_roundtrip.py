@@ -69,7 +69,9 @@ def _fake_rmapi(tmp_path: Path, monkeypatch, device: Path) -> Path:
         "elif cmd == 'mv':\n"
         "    base = DEV / args[1].strip('/'); dst = DEV / args[2].strip('/')\n"
         "    src = next(p for p in (base.with_name(base.name + '.rmdoc'), base.with_name(base.name + '.pdf')) if p.exists())\n"
-        "    dst.mkdir(parents=True, exist_ok=True); shutil.move(str(src), str(dst / src.name))\n"
+        "    if dst.is_dir(): shutil.move(str(src), str(dst / src.name))\n"
+        "    elif dst.parent.is_dir(): shutil.move(str(src), str(dst.with_name(dst.name + src.suffix)))\n"
+        "    else: sys.exit(1)\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("RMAPI_BIN", str(script))
@@ -119,29 +121,69 @@ def _one_stroke_rm(*, erased: bool = False) -> bytes:
     return buf.getvalue()
 
 
-def test_process_then_publish(vault_root, tmp_path, monkeypatch):
+def _sheets(folder: Path) -> list[str]:
+    return sorted(p.stem for p in folder.glob("*_gtd_sheet*.*"))
+
+
+@pytest.fixture
+def run(monkeypatch):
+    """`main`, with upload stamps that follow ``--today`` instead of the wall
+    clock: 03:30, 03:31, ... for successive uploads on the same day."""
+    import gtd_remarkable.cli as cli
+
+    state = {"day": None, "n": {}}
+
+    def main_with_day(argv):
+        if "--today" in argv:
+            state["day"] = argv[argv.index("--today") + 1].replace("-", "")
+        return main(argv)
+
+    def stamp():
+        n = state["n"].get(state["day"], 30)
+        state["n"][state["day"]] = n + 1
+        return f"{state['day']}Z03{n:02d}"
+
+    monkeypatch.setattr(cli, "_stamp", stamp)
+    return main_with_day
+
+
+def _write_on(sheet: Path) -> None:
+    """The tablet syncs ink onto an uploaded sheet: its PDF comes back with strokes."""
+    pdf = sheet.with_suffix(".pdf")
+    _pack_rmdoc(pdf, sheet.with_suffix(".rmdoc"), strokes=True)
+    pdf.unlink()
+
+
+def _cycle(run, vault_root, work, day, rc=0):
+    assert run(["process", "--vault", str(vault_root), "--work-dir", str(work), "--today", day, "--ocr", "null"]) == rc
+    processed = json.loads((work / "processed.json").read_text())
+    assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", day]) == 0
+    return processed
+
+
+def test_process_then_publish(vault_root, tmp_path, monkeypatch, run):
     device = tmp_path / "device" / "GTD Daily"
-    device.mkdir(parents=True)
+    archive = device / "Archive"
+    archive.mkdir(parents=True)
     log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
     work = tmp_path / "work"
 
     # Yesterday's sheet: rendered from the vault, "on the device", written on
     # (no ticks land, but the ink is what makes it a sheet we are finished with).
-    assert main(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
+    assert run(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
     _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc", strokes=True)
-    # Older sheets already in the archive: one inside the 3-day window, one outside.
-    (device / "Archive").mkdir()
-    _pack_rmdoc(work / "y.pdf", device / "Archive" / "20260912Z0330_gtd_sheet.rmdoc")
-    _pack_rmdoc(work / "y.pdf", device / "Archive" / "20260911Z0330_gtd_sheet.rmdoc")
+    # An older applied sheet: never read again, and cleared once a later one is inked.
+    _pack_rmdoc(work / "y.pdf", archive / "20260913Z0330_gtd_sheet_applied.rmdoc", strokes=True)
     before = {p.name: p.read_text() for p in vault_root.glob("*.md")}
 
     msg = tmp_path / "msg.txt"
-    rc = main(["process", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15",
-               "--ocr", "null", "--commit-message-file", str(msg)])
+    rc = run(["process", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15",
+              "--ocr", "null", "--commit-message-file", str(msg)])
     assert rc == 0
     processed = json.loads((work / "processed.json").read_text())
-    assert processed == {"folder": "GTD Daily", "superseded_folder": "GTD Daily/Superseded",
+    assert processed == {"folder": "GTD Daily", "archive_folder": "GTD Daily/Archive",
                          "sheets": ["GTD Daily/20260914Z0330_gtd_sheet"], "pending": []}
+    assert "get GTD Daily/Archive/20260913Z0330_gtd_sheet_applied" not in log.read_text()
     assert (work / "20260914Z0330_gtd_sheet.decisions.json").exists()
     assert (work / "20260914Z0330_gtd_sheet.tasks.json").exists()  # came out of the PDF
     status = (vault_root / "reMarkable status.md").read_text()
@@ -150,22 +192,17 @@ def test_process_then_publish(vault_root, tmp_path, monkeypatch):
     after = {p.name: p.read_text() for p in vault_root.glob("*.md") if p.name != "reMarkable status.md"}
     assert after == before  # a sheet with no ticks on it changes nothing
 
-    rc = main(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15"])
-    assert rc == 0
+    assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15"]) == 0
     calls = log.read_text().splitlines()
-    assert any(c.startswith("-ni mv GTD Daily/20260914Z0330_gtd_sheet GTD Daily/Archive") for c in calls)
-    assert (device / "Archive" / "20260914Z0330_gtd_sheet.rmdoc").exists()
-    assert (device / "Archive" / "20260912Z0330_gtd_sheet.rmdoc").exists()      # 3 days old: kept
-    assert not (device / "Archive" / "20260911Z0330_gtd_sheet.rmdoc").exists()  # 4 days old: rotated out
-    assert any(c.startswith("-ni rm GTD Daily/Archive/20260911Z0330_gtd_sheet") for c in calls)
-    uploaded = [p for p in device.iterdir() if p.suffix == ".pdf"]
-    assert len(uploaded) == 1 and uploaded[0].name.endswith("_gtd_sheet.pdf")
+    assert "-ni mv GTD Daily/20260914Z0330_gtd_sheet GTD Daily/Archive/20260914Z0330_gtd_sheet_applied" in calls
+    assert _sheets(archive) == ["20260914Z0330_gtd_sheet_applied"]  # the older applied one is gone
+    assert _sheets(device) == ["20260915Z0330_gtd_sheet"]
     assert not (work / "processed.json").exists()
 
     # The uploaded sheet carries its own manifest + tasks (with vault handles).
     from remarkable_gtd.common.embedded import read_state
 
-    manifest, tasks = read_state(uploaded[0].read_bytes())
+    manifest, tasks = read_state((device / "20260915Z0330_gtd_sheet.pdf").read_bytes())
     assert manifest["schema"] == "gtd.manifest/1"
     assert tasks["tasks"]["NA-01"]["handle"].startswith("next-actions:")
     assert tasks["tasks"]["IN-01"]["bucket"] == "inbox"
@@ -180,162 +217,102 @@ def test_process_with_nothing_on_device(vault_root, tmp_path, monkeypatch):
     assert not (vault_root / "reMarkable status.md").exists()
 
 
-def _sheets(folder: Path) -> list[str]:
-    return sorted(p.stem for p in folder.glob("*_gtd_sheet.*"))
-
-
-@pytest.fixture
-def stamps(monkeypatch):
-    """Upload stamps that follow ``--today`` instead of the wall clock."""
-    import gtd_remarkable.cli as cli
-
-    state = {"day": None}
-    real_main = cli.main
-
-    def main_with_day(argv):
-        if "--today" in argv:
-            state["day"] = argv[argv.index("--today") + 1]
-        return real_main(argv)
-
-    monkeypatch.setattr(cli, "_stamp", lambda: state["day"].replace("-", "") + "Z0330")
-    return main_with_day
-
-
-def test_offline_tablet_keeps_its_sheet(vault_root, tmp_path, monkeypatch, stamps):
-    """The regression: a tablet that is offline holds its ink locally, so the
-    cloud copy looks blank. Such a sheet is moved aside, never archived and
-    never deleted, while a fresh sheet goes up every day; when the ink finally
-    syncs into the superseded folder it is applied as normal."""
-    run = stamps
+def test_the_sheet_follows_the_vault(vault_root, tmp_path, monkeypatch, run):
+    """Hourly runs: the sheet is replaced exactly when the vault no longer
+    matches what it prints, and the replaced one goes to the archive."""
     device = tmp_path / "device" / "GTD Daily"
     device.mkdir(parents=True)
-    superseded = device / "Superseded"
+    log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
+    work = tmp_path / "work"
+
+    for _ in range(3):
+        _cycle(run, vault_root, work, "2026-09-15")
+    assert _sheets(device) == ["20260915Z0330_gtd_sheet"]
+    assert log.read_text().count(" put ") == 1
+
+    inbox = vault_root / "Inbox.md"
+    inbox.write_text(inbox.read_text() + "Ring the plumber\n", encoding="utf-8")
+    _cycle(run, vault_root, work, "2026-09-15")
+    assert _sheets(device) == ["20260915Z0331_gtd_sheet"]
+    assert _sheets(device / "Archive") == ["20260915Z0330_gtd_sheet"]
+
+    from remarkable_gtd.common.embedded import read_state
+
+    _manifest, tasks = read_state((device / "20260915Z0331_gtd_sheet.pdf").read_bytes())
+    assert any(t["act"] == "Ring the plumber" for t in tasks["tasks"].values())
+
+    # A new day is a change too: the date is printed on the sheet.
+    _cycle(run, vault_root, work, "2026-09-16")
+    assert _sheets(device) == ["20260916Z0330_gtd_sheet"]
+
+
+def test_offline_tablet_keeps_its_sheet(vault_root, tmp_path, monkeypatch, run):
+    """The regression: a tablet that is offline holds its ink locally, so the
+    cloud copy looks blank. Such a sheet is archived but still read every run,
+    while fresh sheets keep going up; when the ink finally syncs into the
+    archive it is applied, and only then are the sheets before it cleared."""
+    device = tmp_path / "device" / "GTD Daily"
+    device.mkdir(parents=True)
+    archive = device / "Archive"
     log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
     work = tmp_path / "work"
 
     assert run(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
     _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc")  # no strokes: the tablet still has them
 
-    # Three nights with the tablet offline: a fresh sheet each day, the old
-    # ones moved aside and still read.
     for day in ("2026-09-15", "2026-09-16", "2026-09-17"):
-        assert run(["process", "--vault", str(vault_root), "--work-dir", str(work),
-                    "--today", day, "--ocr", "null"]) == 0
-        processed = json.loads((work / "processed.json").read_text())
+        processed = _cycle(run, vault_root, work, day)
         assert processed["sheets"] == []
-        assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", day]) == 0
-        stamp = day.replace("-", "")
-        assert _sheets(device) == [f"{stamp}Z0330_gtd_sheet"]
-
+        assert _sheets(device) == [f"{day.replace('-', '')}Z0330_gtd_sheet"]
     assert processed["pending"] == [
-        "GTD Daily/Superseded/20260914Z0330_gtd_sheet",
-        "GTD Daily/Superseded/20260915Z0330_gtd_sheet",
+        "GTD Daily/Archive/20260914Z0330_gtd_sheet",
+        "GTD Daily/Archive/20260915Z0330_gtd_sheet",
         "GTD Daily/20260916Z0330_gtd_sheet",
     ]
-    assert _sheets(superseded) == [
-        "20260914Z0330_gtd_sheet", "20260915Z0330_gtd_sheet", "20260916Z0330_gtd_sheet",
-    ]
-    assert " rm " not in log.read_text()          # nothing deleted
-    assert not (device / "Archive").exists()      # nothing archived
+    assert _sheets(archive) == ["20260914Z0330_gtd_sheet", "20260915Z0330_gtd_sheet", "20260916Z0330_gtd_sheet"]
+    assert " rm " not in log.read_text()
     status = (vault_root / "reMarkable status.md").read_text()
-    assert "Superseded, not written on yet (2)" in status and "20260914Z0330_gtd_sheet" in status
+    assert "Archived, not written on yet (2)" in status and "20260914Z0330_gtd_sheet" in status
 
-    # WiFi back on: the ink reaches the cloud on the document, now in the
-    # superseded folder, and is picked up from there.
-    _pack_rmdoc(work / "y.pdf", superseded / "20260914Z0330_gtd_sheet.rmdoc", strokes=True)
-    assert run(["process", "--vault", str(vault_root), "--work-dir", str(work),
-                "--today", "2026-09-18", "--ocr", "null"]) == 0
-    processed = json.loads((work / "processed.json").read_text())
-    assert processed["sheets"] == ["GTD Daily/Superseded/20260914Z0330_gtd_sheet"]
-    assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-18"]) == 0
-    # Archived, and *not* rotated out in the same run although its name is four
-    # days old: the grace period starts when we are finished with a sheet.
-    assert _sheets(device / "Archive") == ["20260914Z0330_gtd_sheet"]
-    assert _sheets(superseded) == [
-        "20260915Z0330_gtd_sheet", "20260916Z0330_gtd_sheet", "20260917Z0330_gtd_sheet",
+    # WiFi back on: the ink reaches the cloud on the archived document.
+    _write_on(archive / "20260915Z0330_gtd_sheet")
+    processed = _cycle(run, vault_root, work, "2026-09-18")
+    assert processed["sheets"] == ["GTD Daily/Archive/20260915Z0330_gtd_sheet"]
+    # The older blank is cleared, the newer ones are still waiting.
+    assert _sheets(archive) == [
+        "20260915Z0330_gtd_sheet_applied", "20260916Z0330_gtd_sheet", "20260917Z0330_gtd_sheet",
     ]
     assert _sheets(device) == ["20260918Z0330_gtd_sheet"]
 
+    # A later sheet comes back inked: everything before it goes.
+    _write_on(archive / "20260917Z0330_gtd_sheet")
+    _cycle(run, vault_root, work, "2026-09-19")
+    assert _sheets(archive) == ["20260917Z0330_gtd_sheet_applied", "20260918Z0330_gtd_sheet"]
+    assert _sheets(device) == ["20260919Z0330_gtd_sheet"]
 
-def test_a_newer_inked_sheet_does_not_retire_an_older_blank(vault_root, tmp_path, monkeypatch, stamps):
-    """Ink on a newer sheet only proves the tablet synced once; the older sheet
-    can still be written on later, offline. So it is kept readable, not archived."""
-    run = stamps
+
+def test_archived_sheets_go_after_a_week(vault_root, tmp_path, monkeypatch, run):
+    """Blank and applied sheets uploaded more than --keep-days ago are deleted;
+    a sheet that failed to read is kept for a human."""
     device = tmp_path / "device" / "GTD Daily"
-    device.mkdir(parents=True)
-    _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
-    work = tmp_path / "work"
-
-    assert run(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
-    _pack_rmdoc(work / "y.pdf", device / "20260914Z0330_gtd_sheet.rmdoc")                  # blank
-    _pack_rmdoc(work / "y.pdf", device / "20260915Z0330_gtd_sheet.rmdoc", strokes=True)    # inked
-
-    assert run(["process", "--vault", str(vault_root), "--work-dir", str(work),
-                "--today", "2026-09-16", "--ocr", "null"]) == 0
-    processed = json.loads((work / "processed.json").read_text())
-    assert processed["sheets"] == ["GTD Daily/20260915Z0330_gtd_sheet"]
-    assert processed["pending"] == ["GTD Daily/20260914Z0330_gtd_sheet"]
-
-    assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-16"]) == 0
-    assert _sheets(device / "Archive") == ["20260915Z0330_gtd_sheet"]
-    assert _sheets(device / "Superseded") == ["20260914Z0330_gtd_sheet"]
-    assert _sheets(device) == ["20260916Z0330_gtd_sheet"]
-
-
-def test_a_second_run_in_a_day_does_not_churn(vault_root, tmp_path, monkeypatch, stamps):
-    """Today's sheet, still blank, is left alone by a later run the same day —
-    unless that run applied ink from another sheet, which makes it out of date."""
-    run = stamps
-    device = tmp_path / "device" / "GTD Daily"
-    device.mkdir(parents=True)
-    log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
-    work = tmp_path / "work"
-
-    for _ in range(2):
-        assert run(["process", "--vault", str(vault_root), "--work-dir", str(work),
-                    "--today", "2026-09-15", "--ocr", "null"]) == 0
-        assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15"]) == 0
-    assert _sheets(device) == ["20260915Z0330_gtd_sheet"]
-    assert log.read_text().count(" put ") == 1
-
-    # Ink from an older, superseded sheet syncs later the same day: applying it
-    # changes the vault, so today's sheet is replaced after all.
-    assert run(["render", "--vault", str(vault_root), "--today", "2026-09-14", "--out", str(work / "y.pdf")]) == 0
-    (device / "Superseded").mkdir()
-    _pack_rmdoc(work / "y.pdf", device / "Superseded" / "20260914Z0330_gtd_sheet.rmdoc", strokes=True)
-    (device / "20260915Z0330_gtd_sheet.pdf").rename(device / "20260915Z0300_gtd_sheet.pdf")
-    assert run(["process", "--vault", str(vault_root), "--work-dir", str(work),
-                "--today", "2026-09-15", "--ocr", "null"]) == 0
-    assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-15"]) == 0
-    assert _sheets(device) == ["20260915Z0330_gtd_sheet"]
-    assert _sheets(device / "Superseded") == ["20260915Z0300_gtd_sheet"]
-    assert _sheets(device / "Archive") == ["20260914Z0330_gtd_sheet"]
-
-
-def test_long_unwritten_superseded_sheets_are_deleted(vault_root, tmp_path, monkeypatch, stamps):
-    """After --superseded-keep-days a blank superseded sheet is given up on; a
-    younger one stays, and so does an old one that failed to read."""
-    run = stamps
-    device = tmp_path / "device" / "GTD Daily"
-    superseded = device / "Superseded"
-    superseded.mkdir(parents=True)
+    archive = device / "Archive"
+    archive.mkdir(parents=True)
     log = _fake_rmapi(tmp_path, monkeypatch, tmp_path / "device")
     work = tmp_path / "work"
 
     assert run(["render", "--vault", str(vault_root), "--today", "2026-09-01", "--out", str(work / "y.pdf")]) == 0
-    _pack_rmdoc(work / "y.pdf", superseded / "20260901Z0330_gtd_sheet.rmdoc")   # 15 days: goes
-    _pack_rmdoc(work / "y.pdf", superseded / "20260902Z0330_gtd_sheet.rmdoc")   # 14 days: stays
-    with zipfile.ZipFile(superseded / "20260831Z0330_gtd_sheet.rmdoc", "w") as z:  # unreadable: stays
+    _pack_rmdoc(work / "y.pdf", archive / "20260907Z0330_gtd_sheet.rmdoc")          # 8 days: goes
+    _pack_rmdoc(work / "y.pdf", archive / "20260908Z0330_gtd_sheet.rmdoc")          # 7 days: stays
+    _pack_rmdoc(work / "y.pdf", archive / "20260906Z0330_gtd_sheet_applied.rmdoc")  # 9 days: goes
+    with zipfile.ZipFile(archive / "20260905Z0330_gtd_sheet.rmdoc", "w") as z:     # unreadable: stays
         z.writestr("doc-uuid.content", json.dumps({"cPages": {"pages": [{"id": "p", "redir": {"value": 0}}]}}))
         z.write(work / "y.pdf", "doc-uuid.pdf")
         z.writestr("doc-uuid/p.rm", b"not a v6 stroke file at all")
 
-    assert run(["process", "--vault", str(vault_root), "--work-dir", str(work),
-                "--today", "2026-09-16", "--ocr", "null"]) == 1
-    assert run(["publish", "--vault", str(vault_root), "--work-dir", str(work), "--today", "2026-09-16"]) == 0
-    assert _sheets(superseded) == ["20260831Z0330_gtd_sheet", "20260902Z0330_gtd_sheet"]
-    assert "rm GTD Daily/Superseded/20260901Z0330_gtd_sheet" in log.read_text()
-    assert _sheets(device) == ["20260916Z0330_gtd_sheet"]
+    _cycle(run, vault_root, work, "2026-09-15", rc=1)
+    assert _sheets(archive) == ["20260905Z0330_gtd_sheet", "20260908Z0330_gtd_sheet"]
+    assert "rm GTD Daily/Archive/20260907Z0330_gtd_sheet" in log.read_text()
+    assert _sheets(device) == ["20260915Z0330_gtd_sheet"]
 
 
 def test_unreadable_strokes_are_a_failure_not_a_wait(vault_root, tmp_path, monkeypatch):

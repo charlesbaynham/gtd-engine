@@ -58,42 +58,40 @@ cloud copy stays byte-identical to the one that was uploaded — so from CI's
 side, "you have been offline for a week with a full sheet" and "you have not
 written on it yet" look exactly the same.
 
-So a sheet that comes back with no strokes on it is treated as *pending*:
+So nothing is ever decided from a blank sheet. Instead, **every run sweeps
+every sheet not yet applied**, in `GTD Daily` and in `GTD Daily/Archive`, and
+applies the ink on any of them, however old the sheet is.
 
-- it is **not scanned** (no OCR, no vision calls, nothing to apply),
-- it is **not archived**, so the rotation that deletes archived sheets never
-  reaches it,
-- and when `publish` puts up a fresh sheet it is **moved to `GTD Daily/Superseded`**
-  (`--superseded-folder` / `REMARKABLE_SUPERSEDED_FOLDER`), which `process`
-  reads on every run exactly like the main folder.
+That lets the device stay current, so the pipeline can run hourly:
 
-Moving a document in the cloud while the tablet holds unsynced strokes for it
-is safe: the tablet syncs by document id, not by folder, so when WiFi comes
-back the ink lands on the document in its new folder, with no conflict copy.
-This was tested on a real device on 2026-09-27: written on offline, moved
-from the cloud side, reconnected, and all strokes arrived in the moved copy.
+- **The sheet follows the vault.** When the vault no longer matches what the
+  current sheet prints (a new item, a change, or simply a new day), `publish`
+  moves the sheet to the archive and uploads a fresh one. If nothing changed,
+  nothing is uploaded.
+- **Late ink still lands.** Moving a document in the cloud while the tablet
+  holds unsynced strokes for it is safe. The tablet syncs by document id, not
+  by folder, so when WiFi comes back the ink arrives on the document in the
+  archive, with no conflict copy. This was tested on a real device on
+  2026-09-27. The next run applies it against the tasks that sheet was
+  printed with. A row whose item has since changed in the vault is re-found
+  by its text, or reported.
+- **Applied sheets are never applied twice.** Once applied, a sheet is filed
+  as `<name>_applied` in the archive, and the sweep skips that name.
 
-So `GTD Daily` always holds today's sheet, and whatever you wrote on while
-offline is still read whenever it syncs, from whichever folder it is in, and
-applied against the tasks it was printed with. A row whose item has since
-changed in the vault is re-found by its text, or reported.
+The archive is cleared of:
 
-- A blank sheet is replaced **at most once a day**: a second run on the same
-  day leaves today's sheet alone, unless that run applied ink from another
-  sheet, which makes today's out of date.
-- A superseded sheet still blank after **14 days**
-  (`--superseded-keep-days` / `REMARKABLE_SUPERSEDED_KEEP_DAYS`, 0 keeps them
-  all) is deleted. That is the one way offline ink can still be lost: writing
-  on a sheet more than two weeks old while offline for the whole time.
-- Archived sheets are rotated after `--keep-days` (default 3), keyed on the
-  upload date in the name. Rotation never deletes a sheet in the same run
-  that archived it, since a sheet rescued after a long offline spell is
-  already "old" by then.
+- every sheet uploaded **before a later sheet came back with ink**, since that
+  ink proves the tablet synced after they were replaced, and
+- every sheet uploaded more than **a week** ago
+  (`--keep-days` / `REMARKABLE_KEEP_DAYS`, default 7, 0 keeps them all).
 
-If sheets were archived by an earlier version while your tablet was offline,
-move them back into `GTD Daily` on the device (or in the reMarkable app) and
-the next run will pick them up. Don't re-run a sheet that has already been
-applied — the vault edits are not idempotent.
+Both rules can delete ink that has not reached the cloud: writing on an old
+sheet while offline, after a later sheet has already come back inked or after
+a week has passed. A sheet that failed to read is never deleted.
+
+**Upgrading from an earlier version:** sheets already in the archive were
+applied without the `_applied` suffix, and the sweep would apply them again.
+Rename them to `<name>_applied`, or delete them, before the first run.
 
 ## Writing on the sheet
 

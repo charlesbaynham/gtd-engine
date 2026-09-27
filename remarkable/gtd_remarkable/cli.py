@@ -6,33 +6,34 @@ Subcommands (all take ``--vault``, default cwd):
 - ``render``   tasks -> PDF (+ embedded manifest/tasks), no device access
 - ``scan``     an .rmdoc -> decisions.json (device-free; needs the OCR key)
 - ``apply``    decisions.json (+ tasks.json) -> vault edits
-- ``process``  every sheet on the device: download, scan, apply; writes
-               `<work>/processed.json`, `reMarkable status.md` and a commit
-               message. Nothing is archived on the device here so a failed
-               push can simply be re-run.
-- ``publish``  archive the sheets `process` handled, delete archived sheets
-               older than ``--keep-days`` (default 3), move unwritten sheets
-               out of the way into the superseded folder, render today's
-               sheet from the (now updated) vault and upload it.
+- ``process``  sweep every unapplied sheet on the device (the folder and its
+               archive): download, scan, apply; writes `<work>/processed.json`,
+               `reMarkable status.md` and a commit message. Nothing is moved
+               on the device here so a failed push can simply be re-run.
+- ``publish``  file the applied sheets in the archive, bring the current sheet
+               up to date with the (now updated) vault, and clear the archive.
 
 **A sheet is only finished with once we have seen the ink on it.** The cloud
 copy of a sheet the tablet is still holding is byte-identical to the one we
 uploaded, so "no strokes in the ``.rmdoc``" is indistinguishable from "the
-tablet has been offline for three days with your ticks on it". Such a sheet
-is *pending*: `process` neither scans nor archives it. `publish` still puts a
-fresh sheet on the device (at most one replacement a day), and moves the
-pending one into the superseded folder, which `process` reads on every run
-just like the main one. Moving a document in the cloud is safe while the
-tablet holds unsynced strokes for it: the tablet syncs by document id, so the
-ink follows the document into its new folder (tested on a real device,
-2026-09-27). A superseded sheet still blank after ``--superseded-keep-days``
-(default 14) is deleted.
+tablet has been offline for three days with your ticks on it". So nothing is
+decided from a blank sheet: every run reads the folder *and* the archive, and
+ink that turns up on any sheet there is applied, however old the sheet.
+
+That lets the device stay current. Whenever the vault no longer matches what
+the current sheet prints, `publish` moves it into the archive and uploads a
+fresh one. Moving a document in the cloud is safe while the tablet holds
+unsynced strokes for it: the tablet syncs by document id, so the ink follows
+the document into its new folder (tested on a real device, 2026-09-27).
+
+An applied sheet is filed in the archive as ``<name>_applied``, which the
+sweep skips, so nothing is applied twice. The archive is cleared of every
+sheet older than the newest applied one (the tablet has synced since they
+were replaced), and of anything older than ``--keep-days`` (default 7).
 
 Environment: ``REMARKABLE_FOLDER`` (default ``GTD Daily``),
 ``REMARKABLE_ARCHIVE_FOLDER`` (default ``<folder>/Archive``),
-``REMARKABLE_KEEP_DAYS`` (default 3; 0 keeps everything),
-``REMARKABLE_SUPERSEDED_FOLDER`` (default ``<folder>/Superseded``),
-``REMARKABLE_SUPERSEDED_KEEP_DAYS`` (default 14; 0 keeps everything),
+``REMARKABLE_KEEP_DAYS`` (default 7; 0 keeps everything),
 ``RMAPI_DEVICE_TOKEN`` (rmapi auth for headless runs), ``OPENROUTER_API_KEY``
 / ``OPENROUTER_MODEL`` (handwriting) / ``OPENROUTER_AI_MODEL`` (the ✦ AI
 agent alone; falls back to ``OPENROUTER_MODEL``), ``RMAPI_BIN``.
@@ -76,14 +77,6 @@ def _archive_folder(args) -> str:
     return args.archive_folder or os.environ.get("REMARKABLE_ARCHIVE_FOLDER") or f"{_folder(args)}/Archive"
 
 
-def _superseded_folder(args) -> str:
-    return (
-        args.superseded_folder
-        or os.environ.get("REMARKABLE_SUPERSEDED_FOLDER")
-        or f"{_folder(args)}/Superseded"
-    )
-
-
 def _parent(remote: str) -> str:
     return remote.rpartition("/")[0]
 
@@ -92,11 +85,13 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dZ%H%M")
 
 
-_SHEET_STAMP = re.compile(r"^(\d{4})(\d{2})(\d{2})Z(\d{2})(\d{2})_gtd_sheet$")
+APPLIED_SUFFIX = "_applied"
+APPLIED_NAME_RE = re.compile(r"^\d{8}Z\d{4}_gtd_sheet_applied$")
+_SHEET_STAMP = re.compile(r"^(\d{4})(\d{2})(\d{2})Z\d{4}_gtd_sheet(?:_applied)?$")
 
 
 def sheet_date(name: str) -> date | None:
-    """The date in a ``YYYYMMDDZHHMM_gtd_sheet`` name, or ``None``."""
+    """The upload date in a ``YYYYMMDDZHHMM_gtd_sheet[_applied]`` name, or ``None``."""
     m = _SHEET_STAMP.match(name)
     if not m:
         return None
@@ -106,54 +101,64 @@ def sheet_date(name: str) -> date | None:
         return None
 
 
-def sheet_local_date(name: str) -> date | None:
-    """The London date a ``YYYYMMDDZHHMM_gtd_sheet`` was uploaded on, or ``None``.
+def _upload_key(name: str) -> str:
+    """Sorts by upload time: the stamp leads the name."""
+    return name.removesuffix(APPLIED_SUFFIX)
 
-    The stamp is UTC; "was today's sheet already published" is a question
-    about the vault's day, so it is converted.
+
+def archive_to_delete(blank: list[str], applied: list[str], today: date, keep_days: int) -> list[str]:
+    """Archive sheets to delete: everything uploaded before the newest applied
+    sheet, and everything uploaded more than ``keep_days`` ago (0: no age limit).
+
+    Ink on a sheet proves the tablet synced after every older sheet had been
+    replaced, so an older sheet still blank is taken to be blank. ``blank``
+    must only name sheets `process` has just read and found blank: one that
+    failed to read may be holding ink, and is never a candidate.
     """
-    m = _SHEET_STAMP.match(name)
-    if not m:
-        return None
-    try:
-        at = datetime(*(int(g) for g in m.groups()), tzinfo=timezone.utc)
-    except ValueError:
-        return None
-    return at.astimezone(_LONDON).date()
-
-
-def stale_sheets(
-    names: list[str], today: date, keep_days: int, just_archived: set[str] | None = None
-) -> list[str]:
-    """Sheets dated before ``today - keep_days``; ``keep_days <= 0`` keeps all.
-
-    The date is the one in the name, i.e. when the sheet was *uploaded*, not
-    when it was archived. A sheet the tablet held onto while it was offline is
-    therefore already "stale" the moment we finally read it, so a sheet
-    archived in this very run is never deleted in the same run: the grace
-    period is meant to start when we are finished with a sheet.
-    """
-    if keep_days <= 0:
-        return []
-    cutoff = today - timedelta(days=keep_days)
-    just_archived = just_archived or set()
-    return [
-        n
-        for n in names
-        if n not in just_archived and (d := sheet_date(n)) is not None and d < cutoff
-    ]
+    newest = max((_upload_key(n) for n in applied), default=None)
+    cutoff = today - timedelta(days=keep_days) if keep_days > 0 else None
+    out = []
+    for n in sorted(set(blank) | set(applied), key=_upload_key):
+        older = newest is not None and _upload_key(n) < newest
+        aged = cutoff is not None and (d := sheet_date(n)) is not None and d < cutoff
+        if older or aged:
+            out.append(n)
+    return out
 
 
 def _keep_days(args) -> int:
     if args.keep_days is not None:
         return args.keep_days
-    return int(os.environ.get("REMARKABLE_KEEP_DAYS", "3"))
+    return int(os.environ.get("REMARKABLE_KEEP_DAYS", "7"))
 
 
-def _superseded_keep_days(args) -> int:
-    if args.superseded_keep_days is not None:
-        return args.superseded_keep_days
-    return int(os.environ.get("REMARKABLE_SUPERSEDED_KEEP_DAYS", "14"))
+def embedded_tasks(rmdoc: Path) -> dict | None:
+    """The ``gtd.tasks/1`` document a sheet was printed with, or ``None``."""
+    import zipfile
+
+    from remarkable_gtd.common.embedded import read_state
+
+    try:
+        with zipfile.ZipFile(rmdoc) as z:
+            pdf = next((n for n in z.namelist() if n.endswith(".pdf")), None)
+            return read_state(z.read(pdf))[1] if pdf else None
+    except Exception:
+        return None
+
+
+def sheet_tasks(tasks: dict, today: date) -> dict:
+    """The ``gtd.tasks/1`` document `render_pdf` would embed for ``tasks``.
+
+    Built the same way, without the browser, so the current sheet can be
+    compared with the vault before deciding whether to render at all.
+    """
+    import copy
+
+    from remarkable_gtd.common.embedded import tasks_document
+    from remarkable_gtd.gen.generate import build_buckets
+
+    doc = tasks_document(build_buckets(copy.deepcopy(tasks)), today.strftime("%Y-%m-%d"), tasks.get("context"))
+    return json.loads(json.dumps(doc))
 
 
 def ink(rmdoc: Path) -> tuple[int, int]:
@@ -273,17 +278,18 @@ def cmd_process(args) -> int:
     work.mkdir(parents=True, exist_ok=True)
     today = _today(args)
     folder = _folder(args)
-    superseded = _superseded_folder(args)
+    archive = _archive_folder(args)
 
-    # Superseded sheets are read exactly like current ones: a tablet that was
-    # offline when its sheet was moved still hands the ink over, into the new
-    # folder. Oldest first across both: the names sort by upload time.
+    # Every sheet not yet applied, wherever it is: a tablet that was offline
+    # when its sheet was replaced hands the ink over later, into the archive.
+    # Applied sheets are named *_applied and never match. Oldest first: the
+    # names sort by upload time.
     remotes = sorted(
         [f"{folder}/{n}" for n in rm.list_sheets(folder)]
-        + [f"{superseded}/{n}" for n in rm.list_sheets(superseded)],
+        + [f"{archive}/{n}" for n in rm.list_sheets(archive)],
         key=lambda r: r.rpartition("/")[2],
     )
-    print(f"{len(remotes)} sheet(s) in '{folder}' and '{superseded}': "
+    print(f"{len(remotes)} unapplied sheet(s) in '{folder}' and '{archive}': "
           f"{', '.join(r.rpartition('/')[2] for r in remotes) or '-'}")
     results: list[SheetResult] = []
     processed: list[str] = []
@@ -293,7 +299,7 @@ def cmd_process(args) -> int:
     vault = load_vault(root)
     for remote in remotes:
         name = remote.rpartition("/")[2]
-        is_superseded = _parent(remote) == superseded
+        in_archive = _parent(remote) == archive
         print(f"→ {remote}")
         try:
             rmdoc = rm.download(remote, work)
@@ -313,12 +319,14 @@ def cmd_process(args) -> int:
             continue
         if not strokes:
             # Nothing written on it *as far as the cloud knows*. The tablet may
-            # simply be offline with a week of ticks on its own copy, so this
-            # sheet is not scanned and not archived; `publish` may move it into
-            # the superseded folder, where it is still read on every run.
-            print("  no ink yet — left for a later run")
-            results.append(SheetResult(name, scanned=False, pending=True, superseded=is_superseded))
+            # simply be offline with a week of ticks on its own copy, so it is
+            # not scanned, and read again next run wherever `publish` puts it.
+            print("  no ink yet")
+            results.append(SheetResult(name, scanned=False, pending=True, archived=in_archive))
             pending.append(remote)
+            if not in_archive and (printed := embedded_tasks(rmdoc)) is not None:
+                # What the current sheet prints, for `publish` to compare with the vault.
+                (work / f"{name}.tasks.json").write_text(json.dumps(printed, indent=2), encoding="utf-8")
             continue
         try:
             decisions, _manifest, tasks_doc, _annotated = scan_rmdoc(rmdoc, work, _scan_cfg(args.ocr))
@@ -340,17 +348,14 @@ def cmd_process(args) -> int:
         print(f"(dry run — {len(vault.dirty)} file(s) would change: {sorted(vault.dirty)})")
         if pending:
             print(f"(not written on yet: {', '.join(pending)})")
-        print(render_status(results, _run_label(args), today.isoformat(), superseded))
+        print(render_status(results, _run_label(args), today.isoformat(), archive))
         return 1 if failed else 0
 
     save_vault(vault)
     if results:
-        write_status(root, render_status(results, _run_label(args), today.isoformat(), superseded))
+        write_status(root, render_status(results, _run_label(args), today.isoformat(), archive))
     (work / PROCESSED_FILE).write_text(
-        json.dumps(
-            {"folder": folder, "superseded_folder": superseded, "sheets": processed, "pending": pending},
-            indent=2,
-        ),
+        json.dumps({"folder": folder, "archive_folder": archive, "sheets": processed, "pending": pending}, indent=2),
         encoding="utf-8",
     )
     if args.commit_message_file:
@@ -368,54 +373,56 @@ def cmd_publish(args) -> int:
     work.mkdir(parents=True, exist_ok=True)
     today = _today(args)
     folder = _folder(args)
-    superseded = _superseded_folder(args)
-
     archive = _archive_folder(args)
+
     processed_path = work / PROCESSED_FILE
+    applied: list[str] = []
     pending: list[str] = []
-    archived: set[str] = set()
     if processed_path.exists():
         info = json.loads(processed_path.read_text(encoding="utf-8"))
         folder = info.get("folder", folder)
-        superseded = info.get("superseded_folder", superseded)
+        archive = info.get("archive_folder", archive)
+        applied = list(info.get("sheets", []))
         pending = list(info.get("pending", []))
-        for remote in info.get("sheets", []):
-            print(f"→ archiving {remote} -> {archive}")
-            rm.move(remote, archive)
-            archived.add(remote.rpartition("/")[2])
         processed_path.unlink()
 
-    # Rotate: the archive only needs the last few days (the decisions are in
-    # git and remarkable-out/ is a CI artifact). Only sheets we have actually
-    # read the ink off ever reach the archive, so nothing deleted here can
-    # still be holding writing the tablet has not handed over.
-    for name in stale_sheets(rm.list_sheets(archive), today, _keep_days(args), archived):
-        print(f"→ deleting {archive}/{name} (older than {_keep_days(args)} days)")
-        rm.remove(f"{archive}/{name}")
+    # 1. File what was applied under a name the sweep skips, so it is never
+    #    applied twice. `mv` into a path that is not a folder renames.
+    if applied:
+        rm.mkdir(archive)
+    for remote in applied:
+        dest = f"{archive}/{remote.rpartition('/')[2]}{APPLIED_SUFFIX}"
+        print(f"→ filing {remote} -> {dest}")
+        rm._run(["mv", remote, dest])
 
-    # A superseded sheet nobody has written on for this long is given up on.
-    # Only ones `process` just saw blank are candidates: a superseded sheet
-    # that failed to scan may be holding ink, and stays for a human.
-    keep = _superseded_keep_days(args)
-    old_blanks = [r.rpartition("/")[2] for r in pending if _parent(r) == superseded]
-    for name in stale_sheets(old_blanks, today, keep):
-        print(f"→ deleting {superseded}/{name} (never written on, older than {keep} days)")
-        rm.remove(f"{superseded}/{name}")
-
-    # The current sheet came back blank. If it went up today and nothing has
-    # been applied since, leave it: a second run in a day should not churn out
-    # another. Otherwise move it out of the way — still read on every run —
-    # and put a fresh one up.
-    current_blank = [r for r in pending if _parent(r) == folder]
-    if not archived and any(sheet_local_date(r.rpartition("/")[2]) == today for r in current_blank):
-        print("→ not publishing: today's sheet is already on the device, not written on yet")
-        return 0
-    for remote in current_blank:
-        print(f"→ superseding {remote} -> {superseded} (not written on yet; still read every run)")
-        rm.move(remote, superseded)
-
+    # 2. The current sheet: keep it only while it still prints what the vault
+    #    holds. Otherwise it goes to the archive, where it is still read.
     vault = load_vault(root)
     tasks = build_tasks(vault, today)
+    current = sorted((r for r in pending if _parent(r) == folder), key=lambda r: r.rpartition("/")[2])
+    keep = None
+    if current:
+        printed = work / f"{current[-1].rpartition('/')[2]}.tasks.json"
+        if printed.exists() and json.loads(printed.read_text(encoding="utf-8")) == sheet_tasks(tasks, today):
+            keep = current[-1]
+    replaced = [r for r in current if r != keep]
+    for remote in replaced:
+        print(f"→ archiving {remote} -> {archive} (not written on yet; still read every run)")
+        rm.move(remote, archive)
+
+    # 3. Clear the archive. Blank candidates are only sheets `process` has just
+    #    read and found blank; a sheet that failed to read stays for a human.
+    blank = [r.rpartition("/")[2] for r in pending if _parent(r) == archive]
+    blank += [r.rpartition("/")[2] for r in replaced]
+    filed = rm.list_sheets(archive, APPLIED_NAME_RE)
+    for name in archive_to_delete(blank, filed, today, _keep_days(args)):
+        print(f"→ deleting {archive}/{name}")
+        rm.remove(f"{archive}/{name}")
+
+    if keep is not None:
+        print(f"✓ {keep.rpartition('/')[2]} is up to date — nothing to publish")
+        return 0
+
     stamp = _stamp()
     pdf = work / f"{stamp}_gtd_sheet.pdf"
     print(f"→ rendering {pdf.name}")
@@ -443,9 +450,9 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--work-dir", default="remarkable-out")
         if device:
             sp.add_argument("--folder", default=None, help="reMarkable folder (env REMARKABLE_FOLDER)")
-            sp.add_argument("--superseded-folder", default=None,
-                            help="where unwritten sheets go once replaced; still read every run "
-                                 "(env REMARKABLE_SUPERSEDED_FOLDER, default <folder>/Superseded)")
+            sp.add_argument("--archive-folder", default=None,
+                            help="where replaced and applied sheets go; unapplied ones there are still "
+                                 "read every run (env REMARKABLE_ARCHIVE_FOLDER, default <folder>/Archive)")
 
     s = sub.add_parser("tasks"); common(s); s.add_argument("-o", "--out"); s.set_defaults(func=cmd_tasks)
     s = sub.add_parser("render"); common(s); s.add_argument("--out", default="remarkable-out/sheet.pdf"); s.set_defaults(func=cmd_render)
@@ -457,9 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ocr", default="openrouter", choices=["openrouter", "tesseract", "null"])
     s.add_argument("--dry-run", action="store_true"); s.add_argument("--commit-message-file"); s.set_defaults(func=cmd_process)
     s = sub.add_parser("publish"); common(s, work=True, device=True)
-    s.add_argument("--archive-folder", default=None, help="where processed sheets go (env REMARKABLE_ARCHIVE_FOLDER)")
-    s.add_argument("--keep-days", type=int, default=None, help="delete archived sheets older than this (env REMARKABLE_KEEP_DAYS, default 3; 0 keeps all)")
-    s.add_argument("--superseded-keep-days", type=int, default=None, help="delete superseded sheets never written on after this many days (env REMARKABLE_SUPERSEDED_KEEP_DAYS, default 14; 0 keeps all)")
+    s.add_argument("--keep-days", type=int, default=None, help="delete archived sheets uploaded more than this many days ago (env REMARKABLE_KEEP_DAYS, default 7; 0 keeps all)")
     s.set_defaults(func=cmd_publish)
     return p
 

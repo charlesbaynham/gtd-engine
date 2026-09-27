@@ -75,14 +75,23 @@ def test_delegated_row_carries_its_project(tmp_path):
     assert tasks["projects"][0]["stalled"] is False
 
 
-def test_stale_sheets():
-    from gtd_remarkable.cli import sheet_date, stale_sheets
+def test_archive_to_delete():
+    from gtd_remarkable.cli import archive_to_delete, sheet_date
 
     assert sheet_date("20260915Z0330_gtd_sheet") == date(2026, 9, 15)
+    assert sheet_date("20260915Z0330_gtd_sheet_applied") == date(2026, 9, 15)
     assert sheet_date("notes") is None and sheet_date("20261399Z0330_gtd_sheet") is None
-    names = ["20260911Z0330_gtd_sheet", "20260912Z0330_gtd_sheet", "20260915Z0330_gtd_sheet", "notes"]
-    assert stale_sheets(names, date(2026, 9, 15), 3) == ["20260911Z0330_gtd_sheet"]
-    assert stale_sheets(names, date(2026, 9, 15), 0) == []
-    # A sheet archived in this very run is never deleted in the same run, even
-    # when the date in its name is already past the cutoff.
-    assert stale_sheets(names, date(2026, 9, 15), 3, {"20260911Z0330_gtd_sheet"}) == []
+
+    today = date(2026, 9, 15)
+    # Nothing applied yet: only age counts.
+    blank = ["20260907Z1000_gtd_sheet", "20260908Z1000_gtd_sheet", "20260914Z1000_gtd_sheet"]
+    assert archive_to_delete(blank, [], today, 7) == ["20260907Z1000_gtd_sheet"]
+    assert archive_to_delete(blank, [], today, 0) == []
+    # A later sheet came back inked: everything uploaded before it goes, the
+    # newest applied sheet itself and anything newer stay.
+    applied = ["20260913Z1000_gtd_sheet_applied", "20260914Z0900_gtd_sheet_applied"]
+    assert archive_to_delete(blank, applied, today, 7) == [
+        "20260907Z1000_gtd_sheet", "20260908Z1000_gtd_sheet", "20260913Z1000_gtd_sheet_applied",
+    ]
+    # ...and the newest applied sheet goes too once it is a week old.
+    assert archive_to_delete([], ["20260907Z1000_gtd_sheet_applied"], today, 7) == ["20260907Z1000_gtd_sheet_applied"]

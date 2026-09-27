@@ -18,14 +18,11 @@ on:
         type: string
         default: ""
       remarkable_keep_days:
+        description: Archived sheets uploaded more than this many days ago are deleted. 0 keeps all.
         type: string
-        default: "3"
-      remarkable_superseded_keep_days:
-        description: Superseded sheets never written on are deleted after this many days. 0 keeps all.
-        type: string
-        default: "14"
+        default: "7"
       remarkable_max_pending:
-        description: Deprecated and ignored. Unwritten sheets are now moved to a superseded folder and a fresh sheet is published daily.
+        description: Deprecated and ignored. The sheet is now replaced whenever the vault changes, and replaced sheets are still read from the archive.
         type: string
         default: ""
       openrouter_model:
@@ -82,7 +79,6 @@ jobs:
         run: |
           echo "REMARKABLE_FOLDER=${{ inputs.remarkable_folder }}" >> "$GITHUB_ENV"
           echo "REMARKABLE_KEEP_DAYS=${{ inputs.remarkable_keep_days }}" >> "$GITHUB_ENV"
-          echo "REMARKABLE_SUPERSEDED_KEEP_DAYS=${{ inputs.remarkable_superseded_keep_days }}" >> "$GITHUB_ENV"
           if [ -n "${{ inputs.remarkable_archive_folder }}" ]; then echo "REMARKABLE_ARCHIVE_FOLDER=${{ inputs.remarkable_archive_folder }}" >> "$GITHUB_ENV"; fi
           if [ -n "${{ inputs.openrouter_model }}" ]; then echo "OPENROUTER_MODEL=${{ inputs.openrouter_model }}" >> "$GITHUB_ENV"; fi
           if [ -n "${{ inputs.openrouter_ai_model }}" ]; then echo "OPENROUTER_AI_MODEL=${{ inputs.openrouter_ai_model }}" >> "$GITHUB_ENV"; fi
