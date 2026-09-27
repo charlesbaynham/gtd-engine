@@ -200,3 +200,58 @@ def test_archive_keeps_edits_made_earlier_in_the_same_run(tmp_path):
     assert not (root / "Project details" / "Sample.md").exists()
     assert "- [x] Second action" in _read(root, "Project details/Done/Sample.md")
     assert "Sample" not in _read(root, "Next actions.md")
+
+
+# --- star_project -------------------------------------------------------------------
+
+
+def test_star_adds_front_matter_and_unstar_removes_it(tmp_path):
+    root = _a_vault(tmp_path)
+    vault = load_vault(root)
+    assert views.get_project(vault, "Sample")["starred"] is False
+    r = ops.star_project(vault, TODAY, project="sample")
+    save_vault(vault)
+    assert r.payload == {"starred": True, "changed": True}
+    assert _read(root, "Project details/Sample.md") == "---\nstarred: true\n---\n" + PAGE
+
+    vault = load_vault(root)
+    assert views.get_project(vault, "Sample")["starred"] is True
+    # the page still parses: the front matter did not shift its sections
+    assert [it["text"] for it in views.get_project(vault, "Sample")["items"]][0] == "Existing action"
+    assert ops.star_project(vault, TODAY, project="Sample").payload["changed"] is False
+
+    ops.star_project(vault, TODAY, project="Sample", starred=False)
+    save_vault(vault)
+    assert _read(root, "Project details/Sample.md") == PAGE
+
+
+def test_star_keeps_other_front_matter(tmp_path):
+    root = _a_vault(tmp_path)
+    path = root / "Project details" / "Sample.md"
+    path.write_text("---\ngtd: project\nstarred: false\ntags: [x]\n---\n" + PAGE, encoding="utf-8")
+    vault = load_vault(root)
+    assert views.get_project(vault, "Sample")["starred"] is False
+    ops.star_project(vault, TODAY, project="Sample")
+    save_vault(vault)
+    assert _read(root, "Project details/Sample.md") == "---\ngtd: project\nstarred: true\ntags: [x]\n---\n" + PAGE
+
+    vault = load_vault(root)
+    ops.star_project(vault, TODAY, project="Sample", starred=False)
+    save_vault(vault)
+    assert _read(root, "Project details/Sample.md") == "---\ngtd: project\ntags: [x]\n---\n" + PAGE
+
+
+def test_starred_values_obsidian_might_write(tmp_path):
+    from gtd_ci.projects import is_starred
+
+    for value, expected in (("true", True), ("True", True), ("yes", True), ('"true"', True),
+                            ("false", False), ("", False)):
+        assert is_starred(["---", f"starred: {value}", "---"]) is expected, value
+    assert is_starred(["# Goal"]) is False
+    assert is_starred(["---", "starred: true"]) is False  # unclosed: unstarred, not a crash
+
+
+def test_starring_an_unknown_project_is_an_error(tmp_path):
+    vault = load_vault(_a_vault(tmp_path))
+    with pytest.raises(ops.OpError):
+        ops.star_project(vault, TODAY, project="Nope at all whatsoever")

@@ -124,6 +124,11 @@ add the same text as a checkbox on the project page and link the row to it.
 `Project details/<Name>.md`, write the goal, add the first action as a
 checkbox, then add the matching row to `Next actions.md`.
 
+**Star a project.** Put `starred: true` in its page's front matter (in
+Obsidian: a checkbox property). Starred projects sort first on the reMarkable
+sheet and get a link in the hotbar at the top of every page. Unstar by
+removing the line. Keep the set small, or the star stops meaning anything.
+
 **Record project context.** Notes about a project — a decision, a design, what
 a conversation settled — go under `## Notes` on its page, after the
 `## Next Actions` section, with a `### <YYYY-MM-DD>` subheading per day. Never
