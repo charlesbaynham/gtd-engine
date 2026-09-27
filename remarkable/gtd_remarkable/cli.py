@@ -26,10 +26,13 @@ fresh one. Moving a document in the cloud is safe while the tablet holds
 unsynced strokes for it: the tablet syncs by document id, so the ink follows
 the document into its new folder (tested on a real device, 2026-09-27).
 
-An applied sheet is filed in the archive as ``<name>_applied``, which the
-sweep skips, so nothing is applied twice. The archive is cleared of every
-sheet older than the newest applied one (the tablet has synced since they
-were replaced), and of anything older than ``--keep-days`` (default 7).
+Every sheet is named for the moment it was rendered, to the second
+(``YYYYMMDDTHHMMSSZ_gtd_sheet``, UTC), and the vault records the stamp of
+the newest sheet applied so far (``.remarkable.json``, committed with the
+edits it produced). A sheet stamped at or before it is never read again, so
+nothing is applied twice and no sheet is ever renamed. The archive is cleared
+of every sheet stamped before it (the tablet synced after they were
+replaced), and of anything older than ``--keep-days`` (default 7).
 
 Environment: ``REMARKABLE_FOLDER`` (default ``GTD Daily``),
 ``REMARKABLE_ARCHIVE_FOLDER`` (default ``<folder>/Archive``),
@@ -81,47 +84,74 @@ def _parent(remote: str) -> str:
     return remote.rpartition("/")[0]
 
 
+# Named for the moment the sheet was rendered, UTC, to the second. Sheets from
+# before 2026-09-27 carry the older minute-resolution stamp; both are read.
+SHEET_NAME_RE = re.compile(r"^(?:\d{8}T\d{6}Z|\d{8}Z\d{4})_gtd_sheet$")
+_STAMP_FORMATS = (("%Y%m%dT%H%M%SZ", 16), ("%Y%m%dZ%H%M", 13))
+STATE_FILE = ".remarkable.json"
+
+
 def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dZ%H%M")
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-APPLIED_SUFFIX = "_applied"
-APPLIED_NAME_RE = re.compile(r"^\d{8}Z\d{4}_gtd_sheet_applied$")
-_SHEET_STAMP = re.compile(r"^(\d{4})(\d{2})(\d{2})Z\d{4}_gtd_sheet(?:_applied)?$")
+def sheet_time(name: str) -> datetime | None:
+    """When a sheet was rendered (UTC), from its name, or ``None``."""
+    if not SHEET_NAME_RE.match(name):
+        return None
+    for fmt, width in _STAMP_FORMATS:
+        try:
+            return datetime.strptime(name[:width], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 def sheet_date(name: str) -> date | None:
-    """The upload date in a ``YYYYMMDDZHHMM_gtd_sheet[_applied]`` name, or ``None``."""
-    m = _SHEET_STAMP.match(name)
-    if not m:
-        return None
+    """The UTC date a sheet was rendered on, from its name, or ``None``."""
+    t = sheet_time(name)
+    return t.date() if t else None
+
+
+def _iso(t: datetime) -> str:
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_last_applied(root: Path) -> tuple[bool, datetime | None]:
+    """``(recorded, stamp)``: whether the vault has a record at all, and the
+    stamp of the newest sheet applied to it (``None`` if none has been)."""
     try:
-        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except ValueError:
-        return None
+        value = json.loads((root / STATE_FILE).read_text(encoding="utf-8"))["last_applied"]
+    except OSError:
+        return False, None
+    except (ValueError, KeyError, TypeError):
+        return True, None
+    try:
+        return True, datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return True, None
 
 
-def _upload_key(name: str) -> str:
-    """Sorts by upload time: the stamp leads the name."""
-    return name.removesuffix(APPLIED_SUFFIX)
+def write_last_applied(root: Path, t: datetime | None) -> None:
+    body = {"last_applied": _iso(t) if t is not None else None}
+    (root / STATE_FILE).write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
-def archive_to_delete(blank: list[str], applied: list[str], today: date, keep_days: int) -> list[str]:
-    """Archive sheets to delete: everything uploaded before the newest applied
-    sheet, and everything uploaded more than ``keep_days`` ago (0: no age limit).
+def archive_to_delete(names: list[str], last_applied: datetime | None, today: date, keep_days: int) -> list[str]:
+    """Archive sheets to delete: every one rendered before the newest applied
+    sheet, and every one rendered more than ``keep_days`` ago (0: no age limit).
 
     Ink on a sheet proves the tablet synced after every older sheet had been
-    replaced, so an older sheet still blank is taken to be blank. ``blank``
-    must only name sheets `process` has just read and found blank: one that
-    failed to read may be holding ink, and is never a candidate.
+    replaced, so an older sheet still blank is taken to be blank; and an older
+    inked one has been applied already.
     """
-    newest = max((_upload_key(n) for n in applied), default=None)
     cutoff = today - timedelta(days=keep_days) if keep_days > 0 else None
     out = []
-    for n in sorted(set(blank) | set(applied), key=_upload_key):
-        older = newest is not None and _upload_key(n) < newest
-        aged = cutoff is not None and (d := sheet_date(n)) is not None and d < cutoff
-        if older or aged:
+    for n in sorted(names, key=lambda n: sheet_time(n) or datetime.min.replace(tzinfo=timezone.utc)):
+        t = sheet_time(n)
+        if t is None:
+            continue
+        if (last_applied is not None and t < last_applied) or (cutoff is not None and t.date() < cutoff):
             out.append(n)
     return out
 
@@ -282,12 +312,20 @@ def cmd_process(args) -> int:
 
     # Every sheet not yet applied, wherever it is: a tablet that was offline
     # when its sheet was replaced hands the ink over later, into the archive.
-    # Applied sheets are named *_applied and never match. Oldest first: the
-    # names sort by upload time.
+    # A sheet stamped at or before the newest applied one is done with.
+    in_folder = [f"{folder}/{n}" for n in rm.list_sheets(folder, SHEET_NAME_RE)]
+    in_archive = [f"{archive}/{n}" for n in rm.list_sheets(archive, SHEET_NAME_RE)]
+    recorded, last_applied = read_last_applied(root)
+    if not recorded and in_archive:
+        # First run on this vault: everything an earlier version archived had
+        # been applied (or found blank) already, so start after the newest.
+        # Written below, so this happens once, never on a later run.
+        last_applied = max(sheet_time(r.rpartition("/")[2]) for r in in_archive)
+        print(f"no {STATE_FILE} yet: treating sheets archived up to {_iso(last_applied)} as applied")
     remotes = sorted(
-        [f"{folder}/{n}" for n in rm.list_sheets(folder)]
-        + [f"{archive}/{n}" for n in rm.list_sheets(archive)],
-        key=lambda r: r.rpartition("/")[2],
+        (r for r in in_folder + in_archive
+         if last_applied is None or sheet_time(r.rpartition("/")[2]) > last_applied),
+        key=lambda r: sheet_time(r.rpartition("/")[2]),
     )
     print(f"{len(remotes)} unapplied sheet(s) in '{folder}' and '{archive}': "
           f"{', '.join(r.rpartition('/')[2] for r in remotes) or '-'}")
@@ -299,7 +337,7 @@ def cmd_process(args) -> int:
     vault = load_vault(root)
     for remote in remotes:
         name = remote.rpartition("/")[2]
-        in_archive = _parent(remote) == archive
+        archived = _parent(remote) == archive
         print(f"→ {remote}")
         try:
             rmdoc = rm.download(remote, work)
@@ -322,9 +360,9 @@ def cmd_process(args) -> int:
             # simply be offline with a week of ticks on its own copy, so it is
             # not scanned, and read again next run wherever `publish` puts it.
             print("  no ink yet")
-            results.append(SheetResult(name, scanned=False, pending=True, archived=in_archive))
+            results.append(SheetResult(name, scanned=False, pending=True, archived=archived))
             pending.append(remote)
-            if not in_archive and (printed := embedded_tasks(rmdoc)) is not None:
+            if not archived and (printed := embedded_tasks(rmdoc)) is not None:
                 # What the current sheet prints, for `publish` to compare with the vault.
                 (work / f"{name}.tasks.json").write_text(json.dumps(printed, indent=2), encoding="utf-8")
             continue
@@ -343,6 +381,7 @@ def cmd_process(args) -> int:
         _print_report(report)
         results.append(SheetResult(name, scanned=True, counts=counts, apply=report))
         processed.append(remote)
+        last_applied = sheet_time(name)
 
     if args.dry_run:
         print(f"(dry run — {len(vault.dirty)} file(s) would change: {sorted(vault.dirty)})")
@@ -352,6 +391,8 @@ def cmd_process(args) -> int:
         return 1 if failed else 0
 
     save_vault(vault)
+    if (True, last_applied) != read_last_applied(root):
+        write_last_applied(root, last_applied)  # committed with the edits it covers
     if results:
         write_status(root, render_status(results, _run_label(args), today.isoformat(), archive))
     (work / PROCESSED_FILE).write_text(
@@ -386,38 +427,36 @@ def cmd_publish(args) -> int:
         pending = list(info.get("pending", []))
         processed_path.unlink()
 
-    # 1. File what was applied under a name the sweep skips, so it is never
-    #    applied twice. `mv` into a path that is not a folder renames.
-    if applied:
-        rm.mkdir(archive)
+    # 1. An applied sheet in the folder goes to the archive with the rest. It
+    #    is never read again: the vault's record says it has been applied.
     for remote in applied:
-        dest = f"{archive}/{remote.rpartition('/')[2]}{APPLIED_SUFFIX}"
-        print(f"→ filing {remote} -> {dest}")
-        rm._run(["mv", remote, dest])
+        if _parent(remote) != archive:
+            print(f"→ archiving {remote} -> {archive} (applied)")
+            rm.move(remote, archive)
 
     # 2. The current sheet: keep it only while it still prints what the vault
     #    holds. Otherwise it goes to the archive, where it is still read.
     vault = load_vault(root)
     tasks = build_tasks(vault, today)
-    current = sorted((r for r in pending if _parent(r) == folder), key=lambda r: r.rpartition("/")[2])
+    current = sorted((r for r in pending if _parent(r) == folder), key=lambda r: sheet_time(r.rpartition("/")[2]))
     keep = None
     if current:
         printed = work / f"{current[-1].rpartition('/')[2]}.tasks.json"
         if printed.exists() and json.loads(printed.read_text(encoding="utf-8")) == sheet_tasks(tasks, today):
             keep = current[-1]
-    replaced = [r for r in current if r != keep]
-    for remote in replaced:
-        print(f"→ archiving {remote} -> {archive} (not written on yet; still read every run)")
-        rm.move(remote, archive)
+    for remote in current:
+        if remote != keep:
+            print(f"→ archiving {remote} -> {archive} (not written on yet; still read every run)")
+            rm.move(remote, archive)
 
-    # 3. Clear the archive. Blank candidates are only sheets `process` has just
-    #    read and found blank; a sheet that failed to read stays for a human.
-    blank = [r.rpartition("/")[2] for r in pending if _parent(r) == archive]
-    blank += [r.rpartition("/")[2] for r in replaced]
-    filed = rm.list_sheets(archive, APPLIED_NAME_RE)
-    for name in archive_to_delete(blank, filed, today, _keep_days(args)):
+    # 3. Clear the archive. A failed delete is left for the next run rather
+    #    than failing this one: the cloud rate-limits bursts of calls.
+    for name in archive_to_delete(rm.list_sheets(archive, SHEET_NAME_RE), read_last_applied(root)[1], today, _keep_days(args)):
         print(f"→ deleting {archive}/{name}")
-        rm.remove(f"{archive}/{name}")
+        try:
+            rm.remove(f"{archive}/{name}")
+        except Exception as exc:
+            print(f"  ✗ {exc} (will retry next run)", file=sys.stderr)
 
     if keep is not None:
         print(f"✓ {keep.rpartition('/')[2]} is up to date — nothing to publish")

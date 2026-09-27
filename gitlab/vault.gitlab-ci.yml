@@ -83,10 +83,10 @@ remarkable:
   #              + status page
   #   (push)   — the vault changes land before anything is archived, so a
   #              failed push just means the sheet is processed again next time
-  #   publish  — file applied sheets as <name>_applied in the archive, replace
-  #              the current sheet if the vault no longer matches it, clear
-  #              archived sheets older than the newest applied one or than
-  #              REMARKABLE_KEEP_DAYS
+  #   publish  — move applied sheets to the archive, replace the current sheet
+  #              if the vault no longer matches it, clear archived sheets older
+  #              than the newest applied one (recorded in .remarkable.json) or
+  #              than REMARKABLE_KEEP_DAYS
   # A blank cloud copy proves nothing (an offline tablet holds your ticks
   # locally), so replaced sheets are still read from the archive on every run;
   # the ink follows the document there when the tablet syncs.

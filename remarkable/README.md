@@ -75,23 +75,30 @@ That lets the device stay current, so the pipeline can run hourly:
   2026-09-27. The next run applies it against the tasks that sheet was
   printed with. A row whose item has since changed in the vault is re-found
   by its text, or reported.
-- **Applied sheets are never applied twice.** Once applied, a sheet is filed
-  as `<name>_applied` in the archive, and the sweep skips that name.
+- **Applied sheets are never applied twice.** Every sheet is named for the
+  moment it was rendered, to the second (`20260927T173012Z_gtd_sheet`, UTC).
+  The vault records the stamp of the newest sheet applied so far in
+  `.remarkable.json`, committed together with the edits it produced. A sheet
+  stamped at or before it is never read again. Nothing on the device is
+  renamed.
 
 The archive is cleared of:
 
-- every sheet uploaded **before a later sheet came back with ink**, since that
+- every sheet rendered **before a later sheet came back with ink**, since that
   ink proves the tablet synced after they were replaced, and
-- every sheet uploaded more than **a week** ago
+- every sheet rendered more than **a week** ago
   (`--keep-days` / `REMARKABLE_KEEP_DAYS`, default 7, 0 keeps them all).
 
 Both rules can delete ink that has not reached the cloud: writing on an old
 sheet while offline, after a later sheet has already come back inked or after
-a week has passed. A sheet that failed to read is never deleted.
+a week has passed. So can a sheet that failed to read, once a later one is
+applied or it is a week old; the failure is reported in `reMarkable status.md`
+on every run until then.
 
-**Upgrading from an earlier version:** sheets already in the archive were
-applied without the `_applied` suffix, and the sweep would apply them again.
-Rename them to `<name>_applied`, or delete them, before the first run.
+**Upgrading from an earlier version:** the first run finds no
+`.remarkable.json` and takes every sheet already in the archive as applied,
+since an earlier version only archived sheets it had applied or found blank.
+It records that and clears them, so nothing is applied twice.
 
 ## Writing on the sheet
 

@@ -76,22 +76,27 @@ def test_delegated_row_carries_its_project(tmp_path):
 
 
 def test_archive_to_delete():
-    from gtd_remarkable.cli import archive_to_delete, sheet_date
+    from datetime import datetime, timezone
 
-    assert sheet_date("20260915Z0330_gtd_sheet") == date(2026, 9, 15)
-    assert sheet_date("20260915Z0330_gtd_sheet_applied") == date(2026, 9, 15)
+    from gtd_remarkable.cli import archive_to_delete, sheet_date, sheet_time
+
+    assert sheet_date("20260915Z0330_gtd_sheet") == date(2026, 9, 15)          # minute stamp, pre-2026-09-27
+    assert sheet_time("20260915T033012Z_gtd_sheet") == datetime(2026, 9, 15, 3, 30, 12, tzinfo=timezone.utc)
     assert sheet_date("notes") is None and sheet_date("20261399Z0330_gtd_sheet") is None
+    assert sheet_date("20260915Z0330_gtd_sheet_applied") is None
 
     today = date(2026, 9, 15)
+    names = ["20260907T100000Z_gtd_sheet", "20260908Z1000_gtd_sheet", "20260913T100000Z_gtd_sheet",
+             "20260914T090000Z_gtd_sheet", "20260914T100000Z_gtd_sheet", "notes"]
     # Nothing applied yet: only age counts.
-    blank = ["20260907Z1000_gtd_sheet", "20260908Z1000_gtd_sheet", "20260914Z1000_gtd_sheet"]
-    assert archive_to_delete(blank, [], today, 7) == ["20260907Z1000_gtd_sheet"]
-    assert archive_to_delete(blank, [], today, 0) == []
-    # A later sheet came back inked: everything uploaded before it goes, the
-    # newest applied sheet itself and anything newer stay.
-    applied = ["20260913Z1000_gtd_sheet_applied", "20260914Z0900_gtd_sheet_applied"]
-    assert archive_to_delete(blank, applied, today, 7) == [
-        "20260907Z1000_gtd_sheet", "20260908Z1000_gtd_sheet", "20260913Z1000_gtd_sheet_applied",
+    assert archive_to_delete(names, None, today, 7) == ["20260907T100000Z_gtd_sheet"]
+    assert archive_to_delete(names, None, today, 0) == []
+    # A later sheet came back inked: everything rendered before it goes; it
+    # and anything newer stay.
+    applied = datetime(2026, 9, 14, 9, 0, tzinfo=timezone.utc)
+    assert archive_to_delete(names, applied, today, 7) == [
+        "20260907T100000Z_gtd_sheet", "20260908Z1000_gtd_sheet", "20260913T100000Z_gtd_sheet",
     ]
     # ...and the newest applied sheet goes too once it is a week old.
-    assert archive_to_delete([], ["20260907Z1000_gtd_sheet_applied"], today, 7) == ["20260907Z1000_gtd_sheet_applied"]
+    old = datetime(2026, 9, 7, 10, 0, tzinfo=timezone.utc)
+    assert archive_to_delete(["20260907T100000Z_gtd_sheet"], old, today, 7) == ["20260907T100000Z_gtd_sheet"]
