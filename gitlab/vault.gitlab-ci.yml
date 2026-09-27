@@ -92,6 +92,8 @@ remarkable:
   # the ink follows the document there when the tablet syncs.
   stage: remarkable
   needs: [maintain]
+  # One at a time: two runs reading the same sheets would apply the same ink twice.
+  resource_group: remarkable
   rules:
     - if: '$RMAPI_DEVICE_TOKEN'
   image: mcr.microsoft.com/playwright/python:v1.56.0-noble  # Chromium + fonts + python + git
