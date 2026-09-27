@@ -61,20 +61,34 @@ written on it yet" look exactly the same.
 So a sheet that comes back with no strokes on it is treated as *pending*:
 
 - it is **not scanned** (no OCR, no vision calls, nothing to apply),
-- it is **not archived** and never reaches the rotation that deletes old
-  sheets, so it cannot be deleted out from under the tablet,
-- and `publish` **does not upload another sheet on top of it**
-  (`--max-pending` / `REMARKABLE_MAX_PENDING`, default 1).
+- it is **not archived**, so the rotation that deletes archived sheets never
+  reaches it,
+- and when `publish` puts up a fresh sheet it is **moved to `GTD Daily/Superseded`**
+  (`--superseded-folder` / `REMARKABLE_SUPERSEDED_FOLDER`), which `process`
+  reads on every run exactly like the main folder.
 
-Turn WiFi back on, let the tablet sync, and the next run reads the sheet you
-actually wrote on, applies it, archives it, and publishes a fresh one.
+Moving a document in the cloud while the tablet holds unsynced strokes for it
+is safe: the tablet syncs by document id, not by folder, so when WiFi comes
+back the ink lands on the document in its new folder, with no conflict copy.
+This was tested on a real device on 2026-09-27: written on offline, moved
+from the cloud side, reconnected, and all strokes arrived in the moved copy.
 
-A blank sheet is retired — archived, and eventually rotated away — only once a
-**newer** sheet comes back with ink on it. That is proof the tablet has synced
-since the blank one was uploaded, so its blankness is real. Rotation also
-never deletes a sheet in the same run that archived it: the `--keep-days`
-grace period is keyed on the upload date in the name, and a sheet rescued
-after a long offline spell is already "old" by then.
+So `GTD Daily` always holds today's sheet, and whatever you wrote on while
+offline is still read whenever it syncs, from whichever folder it is in, and
+applied against the tasks it was printed with. A row whose item has since
+changed in the vault is re-found by its text, or reported.
+
+- A blank sheet is replaced **at most once a day**: a second run on the same
+  day leaves today's sheet alone, unless that run applied ink from another
+  sheet, which makes today's out of date.
+- A superseded sheet still blank after **14 days**
+  (`--superseded-keep-days` / `REMARKABLE_SUPERSEDED_KEEP_DAYS`, 0 keeps them
+  all) is deleted. That is the one way offline ink can still be lost: writing
+  on a sheet more than two weeks old while offline for the whole time.
+- Archived sheets are rotated after `--keep-days` (default 3), keyed on the
+  upload date in the name. Rotation never deletes a sheet in the same run
+  that archived it, since a sheet rescued after a long offline spell is
+  already "old" by then.
 
 If sheets were archived by an earlier version while your tablet was offline,
 move them back into `GTD Daily` on the device (or in the reMarkable app) and
