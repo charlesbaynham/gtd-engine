@@ -461,7 +461,9 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
     def archive_project(ctx: Context, name: str, dry_run: bool = False) -> dict:
         """Mark a whole project done: move its page to
         Project details/Done/<name>.md and remove the Next actions,
-        Delegated, Scheduled and Tickler rows that linked to it."""
+        Delegated, Scheduled and Tickler rows that linked to it. A name
+        already taken in Done/ gets a ' (<today>)' suffix; an identical
+        copy already there just retires the active page."""
         return do_write(ctx, opsmod.archive_project, dry_run, name=name)
 
     @mcp.tool()

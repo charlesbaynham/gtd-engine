@@ -1153,20 +1153,41 @@ def archive_project(vault: Vault, today: date, *, name: str) -> OpResult:
     src_relpath = str(src_path.relative_to(vault.root))
     done_dir = vault.root / "Project details" / "Done"
     done_dir.mkdir(parents=True, exist_ok=True)
-    dst_path = done_dir / src_path.name
-    if dst_path.exists():
-        raise OpError(f"archive_project: {dst_path.relative_to(vault.root)} already exists")
     page = vault.projects.pop(src_relpath, None)
     if page is not None and src_relpath in vault.dirty:
         # Edits made earlier in the same run (a step ticked off on the sheet
         # before the project itself was) travel with the page.
         write_raw(RawFile(src_path, page.lines, page.trailing_newline))
     vault.dirty.discard(src_relpath)
-    src_path.rename(dst_path)
+
+    # Done/ is a graveyard of every project ever finished, so a name can
+    # recur (a yearly "2026 UROP"), or the page may already have been copied
+    # there by hand. Neither is a reason to leave a finished project active.
+    collision = None
+    dst_path = done_dir / src_path.name
+    if dst_path.exists():
+        if dst_path.read_bytes() == src_path.read_bytes():
+            collision = "identical"
+        else:
+            collision = "renamed"
+            dst_path = done_dir / f"{stem} ({today.isoformat()}).md"
+            n = 2
+            while dst_path.exists():
+                dst_path = done_dir / f"{stem} ({today.isoformat()}) {n}.md"
+                n += 1
+    if collision == "identical":
+        src_path.unlink()
+    else:
+        src_path.rename(dst_path)
     dst_relpath = str(dst_path.relative_to(vault.root))
-    vault.project_index[stem.lower()] = [
-        dst_path if p == src_path else p for p in vault.project_index.get(stem.lower(), [])
-    ]
+    others = [p for p in vault.project_index.get(stem.lower(), []) if p != src_path]
+    if collision == "renamed":
+        vault.project_index[stem.lower()] = others
+        vault.project_index.setdefault(dst_path.stem.lower(), []).append(dst_path)
+    elif collision == "identical":
+        vault.project_index[stem.lower()] = others
+    else:
+        vault.project_index[stem.lower()] = others + [dst_path]
 
     removed = 0
     if vault.next_actions is not None:
@@ -1216,7 +1237,8 @@ def archive_project(vault: Vault, today: date, *, name: str) -> OpResult:
     return OpResult(
         f'Archived project "{stem}"',
         changed,
-        {"removed_next_action_rows": removed, "removed_other_rows": removed_other, "new_path": dst_relpath},
+        {"removed_next_action_rows": removed, "removed_other_rows": removed_other, "new_path": dst_relpath}
+        | ({"done_name_collision": collision} if collision else {}),
     )
 
 

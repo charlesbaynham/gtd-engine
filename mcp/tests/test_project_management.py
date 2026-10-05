@@ -202,6 +202,38 @@ def test_archive_keeps_edits_made_earlier_in_the_same_run(tmp_path):
     assert "Sample" not in _read(root, "Next actions.md")
 
 
+def test_archive_onto_a_reused_name_gets_a_dated_suffix(tmp_path):
+    root = _a_vault(tmp_path)
+    done = root / "Project details" / "Done"
+    done.mkdir()
+    (done / "Sample.md").write_text("last year's Sample\n", encoding="utf-8")
+    vault = load_vault(root)
+    r = ops.archive_project(vault, TODAY, name="Sample")
+    save_vault(vault)
+    new = f"Project details/Done/Sample ({TODAY.isoformat()}).md"
+    assert r.payload["new_path"] == new
+    assert r.payload["done_name_collision"] == "renamed"
+    assert not (root / "Project details" / "Sample.md").exists()
+    assert _read(root, "Project details/Done/Sample.md") == "last year's Sample\n"
+    assert _read(root, new) == PAGE
+    assert "Sample" not in _read(root, "Next actions.md")
+
+
+def test_archive_onto_an_identical_hand_copy_retires_the_active_page(tmp_path):
+    root = _a_vault(tmp_path)
+    done = root / "Project details" / "Done"
+    done.mkdir()
+    shutil.copy(root / "Project details" / "Sample.md", done / "Sample.md")
+    vault = load_vault(root)
+    r = ops.archive_project(vault, TODAY, name="Sample")
+    save_vault(vault)
+    assert r.payload["new_path"] == "Project details/Done/Sample.md"
+    assert r.payload["done_name_collision"] == "identical"
+    assert not (root / "Project details" / "Sample.md").exists()
+    assert sorted(p.name for p in done.iterdir()) == ["Sample.md"]
+    assert "Sample" not in _read(root, "Next actions.md")
+
+
 # --- star_project -------------------------------------------------------------------
 
 
