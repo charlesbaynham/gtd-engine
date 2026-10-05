@@ -337,7 +337,10 @@ Writes to project pages:
 
 - **Archiving** a project (marking the whole project done) moves the page
   to `Project details/Done/<name>.md` and removes every Next actions,
-  Delegated, Scheduled and Tickler row that links it.
+  Delegated, Scheduled and Tickler row that links it. If `Done/<name>.md`
+  already exists with identical content (copied there by hand), the active
+  page is simply removed; if it differs (a name reused, e.g. a yearly
+  project), the page goes to `Done/<name> (<YYYY-MM-DD>).md` instead.
 
 - **Promoting** an item to a project copies
   `Project details/-Project template.md` (basename configurable in the
