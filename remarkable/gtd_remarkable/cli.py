@@ -564,6 +564,11 @@ def ink_fingerprint(rmdoc: Path) -> str:
     return digest.hexdigest()
 
 
+def _fully_applied(report: ApplyReport | None) -> bool:
+    """Only a copy whose every operation landed may be deleted from the archive."""
+    return bool(report and report.applied and not report.warnings)
+
+
 class _ReferenceSync:
     """One `reference-sync` run. ``state`` is the committed record, updated as
     work lands and written even when a step raises; ``applied_before`` is what
@@ -668,10 +673,11 @@ class _ReferenceSync:
             if new is None:
                 continue
             try:
-                if self.has_copy(reference_remote(self.folder, old), strict=True):
-                    dest = _parent(reference_remote(self.folder, new))
-                    self.ensure_folder(dest)
-                    self.rm.move(reference_remote(self.folder, old), dest)
+                if not self.has_copy(reference_remote(self.folder, old), strict=True):
+                    continue  # nothing to carry: the moved note is uploaded as new
+                dest = _parent(reference_remote(self.folder, new))
+                self.ensure_folder(dest)
+                self.rm.move(reference_remote(self.folder, old), dest)
             except Exception as exc:
                 self.error(f"{old}: {exc}")
                 continue
@@ -684,7 +690,7 @@ class _ReferenceSync:
         if entry.get("sha") == self.sha(note) and not self.args.read_ink:
             return
         print(f"→ {relpath}")
-        rmdoc, strokes, unreadable = self.read_copy(remote)
+        rmdoc, strokes, unreadable = self.read_copy(remote, strict=True)
         if rmdoc is not None and unreadable and not strokes:
             self.error(f"{relpath}: {unreadable} stroke layer(s) on the device copy but none could be read; left as it is")
             return
@@ -692,15 +698,15 @@ class _ReferenceSync:
         if strokes:
             fingerprint = ink_fingerprint(rmdoc)
             if fingerprint != entry.get("ink"):
-                self.notes[relpath] = {**entry, "ink": fingerprint}  # recorded first: never read twice
                 report = self.apply_ink(rmdoc, note.stem, remote)
+                self.notes[relpath] = {**entry, "ink": fingerprint}  # only once read: a failed scan is retried
         sha = self.sha(note)
         if entry.get("sha") == sha and (rmdoc is not None or entry.get("error")):
             if fingerprint:
                 self.notes[relpath] = {**entry, "ink": fingerprint}
             return  # nothing to print; ink that changed nothing stays where it is
         if rmdoc is not None:
-            self.archive_copy(remote, relpath, applied=bool(report and report.applied), read=bool(strokes))
+            self.archive_copy(remote, relpath, applied=_fully_applied(report), **({"ink": fingerprint} if fingerprint else {}))
         self.notes.pop(relpath, None)
         pdf = self.work / f"{note.stem}.pdf"
         try:
@@ -721,7 +727,7 @@ class _ReferenceSync:
             try:
                 rmdoc, strokes, unreadable = self.read_copy(remote, strict=True)
                 if rmdoc is not None and (strokes or unreadable):
-                    archived = self.archive_copy(remote, relpath, read=True, orphan=True)
+                    archived = self.archive_copy(remote, relpath, orphan=True)
                     self.warn(f"{relpath}: deleted from the vault but written on; its device copy is at '{archived}' unread")
                 elif rmdoc is not None:
                     self.rm.remove(remote)
@@ -738,27 +744,31 @@ class _ReferenceSync:
 
         try:
             stamps = [e for e in self.rm.list_dir(self.archive) if e.is_dir]
-            for stamp in stamps:
+        except RmapiError:
+            return
+        for stamp in stamps:
+            try:
                 when = datetime.strptime(stamp.name, _STAMP_FORMAT).replace(tzinfo=timezone.utc)
-                for doc in (d for d in self.rm.list_dir(f"{self.archive}/{stamp.name}") if not d.is_dir):
-                    self.state["archive"].setdefault(
-                        f"{self.archive}/{stamp.name}/{doc.name}", {"note": "", "archived": _iso(when), "applied": False})
-        except (RmapiError, ValueError):
-            pass
+                docs = [d for d in self.rm.list_dir(f"{self.archive}/{stamp.name}") if not d.is_dir]
+            except (ValueError, RmapiError):
+                continue
+            for doc in docs:
+                self.state["archive"].setdefault(
+                    f"{self.archive}/{stamp.name}/{doc.name}", {"note": "", "archived": _iso(when), "applied": False})
 
     def read_archive(self) -> None:
         self.adopt_archive()
         for remote, entry in sorted(self.state["archive"].items()):
-            if entry.get("applied") or entry.get("read") or entry.get("orphan"):
+            if entry.get("applied") or entry.get("orphan"):
                 continue
             print(f"→ {remote} (archived)")
             try:
                 rmdoc, strokes, unreadable = self.read_copy(remote, strict=True)
                 if rmdoc is None:
                     del self.state["archive"][remote]
-                elif strokes:
+                elif strokes and (fingerprint := ink_fingerprint(rmdoc)) != entry.get("ink"):
                     report = self.apply_ink(rmdoc, remote.rpartition("/")[2], remote)
-                    entry.update(applied=bool(report.applied), read=True)
+                    entry.update(applied=_fully_applied(report), ink=fingerprint)  # re-read if re-inked
                 elif unreadable:
                     self.warn(f"{remote}: {unreadable} stroke layer(s) but none could be read; kept")
             except Exception as exc:
@@ -767,6 +777,7 @@ class _ReferenceSync:
     def clean_archive(self) -> None:
         keep_days = _keep_days(self.args)
         cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days) if keep_days > 0 else None
+        emptied: set[str] = set()
         for remote, entry in sorted(self.state["archive"].items()):
             archived = datetime.strptime(entry["archived"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             if remote not in self.applied_before and not (cutoff and archived < cutoff):
@@ -778,6 +789,13 @@ class _ReferenceSync:
                 self.warn(f"{remote}: could not be deleted ({exc}); will retry")
                 continue
             del self.state["archive"][remote]
+            emptied.add(remote.rpartition("/")[0])
+        for stamp_folder in sorted(emptied):
+            if not any(r.startswith(stamp_folder + "/") for r in self.state["archive"]):
+                try:
+                    self.rm.remove(stamp_folder)
+                except Exception:
+                    pass  # not empty (a copy the state does not know of) or already gone
 
     def run(self) -> int:
         try:

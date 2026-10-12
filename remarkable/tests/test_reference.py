@@ -150,6 +150,8 @@ class FakeDevice:
         self.scans: list[str] = []
         self.margin_only = False
         self.scan_text = "from the tablet"
+        self.scan_fails = False
+        self.reading = None
 
     def install(self, monkeypatch):
         from remarkable_gtd.rm import api
@@ -198,6 +200,11 @@ class FakeDevice:
         self.log.append(("upload", f"{folder}/{pdf.stem}"))
 
     def remove(self, remote):
+        if remote in self.folders:
+            if any(p.startswith(remote + "/") for p in self.docs):
+                raise self.error("folder not empty")
+            self.folders.discard(remote)
+            return
         del self.docs[remote]
         self.log.append(("remove", remote))
 
@@ -234,8 +241,12 @@ def device(tmp_path, monkeypatch):
         Path(out_path).write_bytes(f"{stem}:{source_sha}".encode())
 
     def fake_scan(rmdoc, work_dir, cfg=None, today=None, **_):
-        dev.scans.append(rmdoc.stem)
         stem = rmdoc.stem
+        if dev.scan_fails:
+            raise RuntimeError("engine outage")
+        dev.scans.append(stem)
+        if dev.reading:
+            return {"pages": [page(stem=stem, ai=True, reading=dev.reading)]}, {}, {}, rmdoc
         if dev.margin_only:
             return {"pages": [page(stem=stem, ink_elsewhere=True)]}, {}, {}, rmdoc
         rows = [{"id": "RF-C1", "inked": True, "act_text": dev.scan_text}]
@@ -244,7 +255,7 @@ def device(tmp_path, monkeypatch):
     ticks = iter(range(10**6))
     monkeypatch.setattr(cli, "_stamp", lambda: f"20261012T{next(ticks):06d}Z")  # runs here share a second
     monkeypatch.setattr(refgen, "render_reference", fake_render)
-    monkeypatch.setattr(cli, "ink", lambda rmdoc: {b"inked": (3, 0), b"broken": (0, 1)}.get(rmdoc.read_bytes(), (0, 0)))
+    monkeypatch.setattr(cli, "ink", lambda rmdoc: (3, 0) if rmdoc.read_bytes().startswith(b"inked") else (0, 1) if rmdoc.read_bytes() == b"broken" else (0, 0))
     monkeypatch.setattr(cli, "ink_fingerprint", lambda rmdoc: hashlib.sha256(rmdoc.read_bytes()).hexdigest())
     monkeypatch.setattr("remarkable_gtd.scan.sheet.scan_rmdoc", fake_scan)
     return dev
@@ -500,3 +511,59 @@ def test_apply_command_routes_reference_decisions(root):
     decisions.write_text(json.dumps({"pages": [page(rows=[{"id": "RF-C1", "inked": True, "act_text": "by hand"}])]}), encoding="utf-8")
     assert cli.main(["apply", "--vault", str(root), "--today", "2026-10-12", str(decisions)]) == 0
     assert hot_water(root).read_text(encoding="utf-8").endswith("by hand\n")
+
+
+def test_a_failed_scan_is_retried_not_marked_read(root, device):
+    sync(root)
+    device.scribble("GTD Reference/Hot water")
+    device.scan_fails = True
+    assert sync(root, "--read-ink") == 1
+    assert "ink" not in state(root)["notes"]["Reference/Hot water.md"]
+    device.scan_fails = False
+    assert sync(root, "--read-ink") == 0 and device.scans == ["Hot water"]
+
+
+def test_a_copy_with_a_failed_operation_stays_in_the_archive_until_reinked(root, device):
+    sync(root)
+    device.scribble("GTD Reference/Hot water")
+    device.reading = reading(op("capture", text="fine"), op("reference_edit", old="absent", new="x"))
+    change_note(root)
+    assert sync(root) == 0
+    (archived,) = device.archived()
+    assert state(root)["archive"][archived]["applied"] is False
+    assert sync(root, "--read-ink") == 0 and len(device.scans) == 1  # same ink: not read again
+    sync(root)
+    assert device.archived() == [archived]
+    device.reading = reading(op("capture", text="again"))
+    device.scribble(archived, b"inked, more strokes")
+    assert sync(root, "--read-ink") == 0 and len(device.scans) == 2
+    assert state(root)["archive"][archived]["applied"] is True
+
+
+def test_a_foreign_folder_in_the_archive_does_not_stop_adoption(root, device):
+    sync(root)
+    (root / ".remarkable-reference.json").write_text("{}", encoding="utf-8")
+    device.folders |= {ARCHIVE, f"{ARCHIVE}/notes", f"{ARCHIVE}/20261012T000001Z"}
+    device.scribble(f"{ARCHIVE}/20261012T000001Z/Hot water")
+    device.scribble(f"{ARCHIVE}/notes/other")
+    assert sync(root, "--read-ink") == 0 and device.scans == ["Hot water"]
+
+
+def test_applied_archive_entries_take_their_stamp_folder_with_them(root, device):
+    sync(root)
+    device.scribble("GTD Reference/Hot water")
+    change_note(root)
+    sync(root, "--read-ink")
+    (archived,) = device.archived()
+    stamp_folder = archived.rpartition("/")[0]
+    sync(root)
+    assert stamp_folder not in device.folders
+
+
+def test_moved_note_whose_copy_is_missing_is_uploaded_as_new(root, device):
+    sync(root)
+    del device.docs["GTD Reference/Hot water"]
+    (root / "Reference" / "House").mkdir()
+    hot_water(root).rename(root / "Reference" / "House" / "Hot water.md")
+    assert sync(root) == 0
+    assert list(device.docs) == ["GTD Reference/House/Hot water"] and device.renders == ["Hot water", "Hot water"]

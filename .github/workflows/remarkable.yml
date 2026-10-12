@@ -179,6 +179,11 @@ jobs:
       - name: Trust the workspace
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      # The checkout is the commit that triggered the run, not what the
+      # remarkable job just pushed.
+      - name: Pick up the remarkable job's push
+        run: git pull --ff-only origin "$GITHUB_REF_NAME"
+
       - name: Export optional env vars
         run: |
           echo "REMARKABLE_FOLDER=${{ inputs.remarkable_folder }}" >> "$GITHUB_ENV"
