@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import projects as projectsmod
+from .names import NameRejected, near_names, usable_file_name
 from .vault import ParseFailure, load_raw, split_front_matter
 
 REFERENCE_DIR = "Reference"
@@ -130,3 +131,42 @@ def load_references(root: Path, errors: list[tuple[str, str]]) -> dict[str, Refe
             continue
         notes[note.relpath] = note
     return notes
+
+
+def reference_dir(note: ReferenceNote) -> str:
+    return str(Path(note.relpath).parent)
+
+
+def normalise_folder(folder: str | None) -> str:
+    """A subfolder of `Reference/` as 'A/B' ('' for the top level); each
+    segment must be a usable file name."""
+    parts = (folder or "").replace("\\", "/").strip("/").split("/")
+    if parts[:1] == [REFERENCE_DIR]:
+        parts = parts[1:]
+    return "/".join(usable_file_name("folder", part) for part in parts if part)
+
+
+def find_note(notes: dict[str, ReferenceNote], name: str) -> ReferenceNote | None:
+    """The note `name` denotes, or None: an exact stem, else a unique
+    case-insensitive one; a `Sub/Name` form matches the path below
+    `Reference/`. Several matches raise, naming every candidate path."""
+    key = name.strip().removesuffix(".md").removeprefix(f"{REFERENCE_DIR}/")
+
+    def below_reference(note: ReferenceNote) -> str:
+        return note.relpath.removeprefix(f"{REFERENCE_DIR}/").removesuffix(".md")
+
+    field = below_reference if "/" in key else (lambda note: note.stem)
+    candidates = list(notes.values())
+    hits = [n for n in candidates if field(n) == key] or [n for n in candidates if field(n).lower() == key.lower()]
+    if len(hits) > 1:
+        raise NameRejected(f"reference note {name!r} is ambiguous: {', '.join(n.relpath for n in hits)}")
+    return hits[0] if hits else None
+
+
+def resolve_note(notes: dict[str, ReferenceNote], name: str) -> ReferenceNote:
+    note = find_note(notes, name)
+    if note is not None:
+        return note
+    _, near = near_names([n.stem for n in notes.values()], name)
+    hint = f"; did you mean: {', '.join(near)}?" if near else ""
+    raise NameRejected(f"no reference note named {name!r}{hint}")

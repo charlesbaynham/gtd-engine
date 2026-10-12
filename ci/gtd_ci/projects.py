@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from .model import Vault
 
 _HEADING = re.compile(r"^(#{1,2})\s+(.*)$")
+_FENCE = re.compile(r"^\s*(```|~~~)")
 _ITEM = re.compile(r"^([-*]) \[( |x|X)\] (.*)$")
 _LINK = re.compile(r"\[\[([^\]]+)\]\]")
 
@@ -46,8 +47,12 @@ def find_heading(lines: list[str], title: str, level: int = 2) -> int | None:
     """Index of the first heading of `level` whose text equals `title`
     (trimmed, case-insensitive), or None."""
     want = title.strip().lower()
+    fenced = False
     for i, line in enumerate(lines):
-        m = _HEADING.match(line.strip())
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        m = None if fenced else _HEADING.match(line.strip())
         if m and len(m.group(1)) == level and m.group(2).strip().lower() == want:
             return i
     return None
@@ -126,8 +131,12 @@ def set_starred(lines: list[str], starred: bool) -> list[str]:
 def section_bounds(lines: list[str], heading_index: int) -> int:
     """End (exclusive) of the section opened at `heading_index`: the next
     level-1/2 heading, or EOF (§6, same bound for every level-2 section)."""
+    fenced = False
     for i in range(heading_index + 1, len(lines)):
-        m = _HEADING.match(lines[i].strip())
+        if _FENCE.match(lines[i]):
+            fenced = not fenced
+            continue
+        m = None if fenced else _HEADING.match(lines[i].strip())
         if m and len(m.group(1)) in (1, 2):
             return i
     return len(lines)
@@ -141,6 +150,18 @@ def parse_items(lines: list[str], start: int, end: int) -> list[ProjectItem]:
             marker, box, text = m.group(1), m.group(2), m.group(3)
             items.append(ProjectItem(marker, box.lower() == "x", text.strip(), i))
     return items
+
+
+def reparse(page: ProjectPage) -> None:
+    """Re-derive the Next Actions bounds and items from `page.lines`, after an
+    edit that may have shifted them."""
+    page.heading_index = find_next_actions_heading(page.lines)
+    if page.heading_index is None:
+        page.section_end = len(page.lines)
+        page.items = []
+        return
+    page.section_end = section_bounds(page.lines, page.heading_index)
+    page.items = parse_items(page.lines, page.heading_index + 1, page.section_end)
 
 
 def load_project(path: Path) -> ProjectPage | None:

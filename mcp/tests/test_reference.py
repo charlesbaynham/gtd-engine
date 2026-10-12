@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from gtd_ci import links as linksmod
 from gtd_ci.model import load_vault, save_vault
 from gtd_mcp import ops, views
 from gtd_mcp.config import Config
@@ -99,7 +100,7 @@ def test_get_reference_section_only(root):
 
 
 def test_get_reference_unknown_section_names_the_real_ones(root):
-    with pytest.raises(ops.OpError, match="no '## Missing' section.*Layout, Notes"):
+    with pytest.raises(ValueError, match="no '## Missing' section.*Layout, Notes"):
         views.get_reference(load_vault(root), "Flat hot water", section="Missing")
 
 
@@ -109,11 +110,11 @@ def test_name_resolution(root):
     assert views.get_reference(vault, "Flat hot water")["path"] == "Reference/Flat hot water.md"
     assert views.get_reference(vault, "Reference/House/Wiring")["path"] == "Reference/House/Wiring.md"
     assert views.get_reference(vault, "Other/wiring.md")["path"] == "Reference/Other/Wiring.md"
-    with pytest.raises(ops.OpError, match="ambiguous: Reference/House/Wiring.md, Reference/Other/Wiring.md"):
+    with pytest.raises(ValueError, match="ambiguous: Reference/House/Wiring.md, Reference/Other/Wiring.md"):
         views.get_reference(vault, "Wiring")
-    with pytest.raises(ops.OpError, match="did you mean: Flat hot water"):
+    with pytest.raises(ValueError, match="did you mean: Flat hot water"):
         views.get_reference(vault, "Flat hot watr")
-    with pytest.raises(ops.OpError, match="no reference note named 'Zebra'$"):
+    with pytest.raises(ValueError, match="no reference note named 'Zebra'$"):
         views.get_reference(vault, "Zebra")
 
 
@@ -140,9 +141,9 @@ def test_search_excerpt_is_trimmed(root):
 
 def test_backlinks_find_every_kind_of_file(root):
     _write(root, "Project details/Done/Old.md", "# Goal\n\n[[Wiring]]\n")
-    kinds = {b["kind"] for b in views.backlinks(load_vault(root), "Flat hot water")}
+    kinds = {b["kind"] for b in linksmod.backlinks(load_vault(root), "Flat hot water")}
     assert kinds == {"reference"}
-    assert {b["kind"] for b in views.backlinks(load_vault(root), "Wiring")} == {"project-done"}
+    assert {b["kind"] for b in linksmod.backlinks(load_vault(root), "Wiring")} == {"project-done"}
 
 
 # --- create ---------------------------------------------------------------------------------
@@ -279,7 +280,7 @@ def test_rename_rewrites_links_in_every_kind_of_file(root):
     assert not (root / "Reference/Flat hot water.md").exists()
     assert _read(root, "Reference/Hot water.md") == BOILER
     assert "read [[Hot water]]" in _read(root, "Inbox.md")
-    assert "[[Hot water|the note]]" in _read(root, "Tickler/Next week.md")
+    assert "[[Reference/Hot water|the note]]" in _read(root, "Tickler/Next week.md")
     assert "[[Hot water#Layout\\|layout]]" in _read(root, "Next actions.md")
     assert "See [[Hot water]]." in _read(root, "Project details/Kitchen refit.md")
     assert "[[Hot water|it]]" in _read(root, "Project details/Done/Finished.md")
@@ -314,13 +315,13 @@ def test_rename_allows_a_case_only_change(root):
     assert [p.name for p in (root / "Reference/House").iterdir()] == ["WIRING.md"]
 
 
-def test_move_changes_folder_and_fixes_only_folder_prefixed_links(root):
+def test_move_changes_folder_and_retargets_only_folder_prefixed_links(root):
     _write(root, "Reference/House/Wiring.md", "# Wiring\n")
     _write(root, "Inbox.md", "---\ngtd: inbox\n---\nbare [[Wiring]] and [[House/Wiring|prefixed]] and [[wiring]]\n")
     result = _run(root, ops.move_reference, name="Wiring", folder="Electrics/Mains")
     assert (root / "Reference/Electrics/Mains/Wiring.md").is_file()
     assert not (root / "Reference/House").exists()  # emptied folder is tidied away
-    assert "bare [[Wiring]] and [[Wiring|prefixed]] and [[wiring]]" in _read(root, "Inbox.md")
+    assert "bare [[Wiring]] and [[Electrics/Mains/Wiring|prefixed]] and [[wiring]]" in _read(root, "Inbox.md")
     assert result.payload["new_path"] == "Reference/Electrics/Mains/Wiring.md"
 
 
@@ -542,3 +543,94 @@ def test_oversize_attachment_is_refused(mcp, root, monkeypatch):
     monkeypatch.setattr(views, "MAX_ATTACHMENT_BYTES", 10)
     with pytest.raises(Exception, match="over the 10-byte limit"):
         _call(mcp, "get_attachment", name="big.png")
+
+
+# --- notes sharing a stem ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def twins(root) -> Path:
+    _write(root, "Reference/A/Boiler.md", "# Boiler A\n")
+    _write(root, "Reference/B/Boiler.md", "# Boiler B\n")
+    _write(root, "Inbox.md", "---\ngtd: inbox\n---\n[[A/Boiler]] and [[B/Boiler]] and [[Reference/A/Boiler|a]] and [[Boiler]]\n")
+    return root
+
+
+def test_rename_of_one_twin_leaves_the_other_and_bare_links_alone(twins):
+    result = _run(twins, ops.rename_reference, name="A/Boiler", new_name="Heater")
+    assert _read(twins, "Inbox.md").endswith("[[A/Heater]] and [[B/Boiler]] and [[Reference/A/Heater|a]] and [[Boiler]]\n")
+    assert result.payload["ambiguous_links"] == 1
+    assert (twins / "Reference/B/Boiler.md").is_file()
+
+
+def test_move_of_one_twin_retargets_only_its_prefixed_links(twins):
+    result = _run(twins, ops.move_reference, name="A/Boiler", folder="C")
+    assert _read(twins, "Inbox.md").endswith("[[C/Boiler]] and [[B/Boiler]] and [[Reference/C/Boiler|a]] and [[Boiler]]\n")
+    assert result.payload["ambiguous_links"] == 1
+
+
+def test_move_of_a_twin_to_the_top_level_drops_the_prefix(twins):
+    _run(twins, ops.move_reference, name="A/Boiler", folder="")
+    assert "[[Boiler]] and [[B/Boiler]] and [[Reference/Boiler|a]]" in _read(twins, "Inbox.md")
+
+
+def test_delete_of_one_twin_only_warns_about_links_that_name_it(twins):
+    result = _run(twins, ops.delete_reference, name="B/Boiler")
+    assert result.payload["linked_from"] == [{"kind": "inbox", "path": "Inbox.md", "count": 2}]
+
+
+# --- stems shared with projects -----------------------------------------------------------------
+
+
+def test_reference_rename_and_move_refuse_when_a_project_has_the_stem(root):
+    _write(root, "Project details/Done/Wiring.md", "# Goal\n\nOld.\n")
+    vault = load_vault(root)
+    with pytest.raises(ops.OpError, match="a project is also called 'Wiring'"):
+        ops.rename_reference(vault, TODAY, name="Wiring", new_name="Mains")
+    with pytest.raises(ops.OpError, match="a project is also called 'Wiring'"):
+        ops.move_reference(vault, TODAY, name="Wiring", folder="Elsewhere")
+
+
+def test_projects_cannot_take_a_reference_stem(root):
+    vault = load_vault(root)
+    with pytest.raises(ops.OpError, match="Reference/House/Wiring.md already exists"):
+        ops.create_project(vault, TODAY, name="wiring", goal="g")
+    with pytest.raises(ops.OpError, match="Reference/House/Wiring.md already exists"):
+        ops.rename_project(vault, TODAY, project="Kitchen refit", new_name="Wiring")
+
+
+# --- edit overlap, typo hint, fences ------------------------------------------------------------
+
+
+def test_edit_counts_overlapping_occurrences(root):
+    _write(root, "Reference/Overlap.md", "# Overlap\n\naaa\n")
+    vault = load_vault(root)
+    with pytest.raises(ops.OpError, match="occurs 2 times"):
+        ops.edit_reference(vault, TODAY, name="Overlap", old="aa", new="b")
+
+
+def test_triage_to_a_near_miss_creates_but_suggests(root):
+    _write(root, "Inbox.md", "---\ngtd: inbox\n---\nsomething\n")
+    result = _run(root, ops.triage, handle=_inbox_handle(root, "something"), to="reference:Flat hot watr")
+    assert result.payload["did_you_mean"] == ["Flat hot water"]
+    assert result.payload["reference_created"] is True
+
+
+def test_a_notes_heading_inside_a_code_fence_is_not_an_append_target(root):
+    _write(root, "Reference/Fenced.md", "# Fenced\n\n```\n## Notes\n```\n\nAfter.\n")
+    _run(root, ops.append_reference, name="Fenced", text="Real.")
+    assert _read(root, "Reference/Fenced.md").endswith("After.\n\n## Notes\n\n### 2026-09-10\n\nReal.\n")
+
+
+# --- the store undoes a half-finished op ----------------------------------------------------------
+
+
+def test_an_op_that_raises_after_touching_files_leaves_the_tree_clean(mcp, root, monkeypatch):
+    def broken(vault, today, **kwargs):
+        (root / "Reference" / "House" / "Wiring.md").unlink()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ops, "delete_reference", broken)
+    with pytest.raises(Exception, match="boom"):
+        _call(mcp, "delete_reference", name="Wiring")
+    assert _git(root, "status", "--porcelain") == ""

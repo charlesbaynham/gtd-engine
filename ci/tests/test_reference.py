@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gtd_ci.links import backlinks, rewrite_everywhere, rewrite_links
+from gtd_ci.links import Retarget, backlinks, rewrite_everywhere, rewrite_links
 from gtd_ci.model import load_vault, save_vault
 
 NOTE = """---
@@ -94,13 +94,19 @@ def test_dirty_note_is_saved_and_clean_one_is_not(tmp_path):
     assert (tmp_path / "Reference/A.md").read_text() == "# A\n\nchanged\n"
 
 
-def test_rewrite_links_keeps_alias_and_heading():
+def test_rewrite_links_keeps_alias_and_heading_and_drops_the_prefix():
     text = "[[Old]] [[old|a]] [[Dir/Old#h]] [[Older]] ![[Old.png]] [[Old\\|x]]"
-    assert rewrite_links(text, "Old", "New") == "[[New]] [[New|a]] [[New#h]] [[Older]] ![[Old.png]] [[New\\|x]]"
+    assert rewrite_links(text, Retarget("Old", "New")) == (
+        "[[New]] [[New|a]] [[New#h]] [[Older]] ![[Old.png]] [[New\\|x]]", 0,
+    )
 
 
-def test_moving_rewrites_only_folder_prefixed_links():
-    assert rewrite_links("[[Old]] [[Dir/Old|a]]", "Old", "Old") == "[[Old]] [[Old|a]]"
+def test_a_prefixed_link_matches_only_a_path_suffix_of_the_real_directory():
+    retarget = Retarget("Boiler", "Heater", within="Reference/X/A", bare=False, prefix_for=lambda p: p)
+    text = "[[A/Boiler]] [[X/A/Boiler]] [[Reference/X/A/Boiler|a]] [[B/Boiler]] [[Boiler]] [[Z/A/Boiler]]"
+    assert rewrite_links(text, retarget) == (
+        "[[A/Heater]] [[X/A/Heater]] [[Reference/X/A/Heater|a]] [[B/Boiler]] [[Boiler]] [[Z/A/Boiler]]", 1,
+    )
 
 
 def test_backlinks_and_rewrite_cover_every_kind_of_file(tmp_path):
@@ -117,7 +123,7 @@ def test_backlinks_and_rewrite_cover_every_kind_of_file(tmp_path):
         "reference", "project", "project-done", "inbox", "next-actions",
     }
 
-    result = rewrite_everywhere(vault, "Target", "Renamed", done=True)
+    result = rewrite_everywhere(vault, Retarget("Target", "Renamed"), done=True)
     save_vault(vault)
     assert result.count == 6
     assert result.written_directly == {"Project details/Done/Old.md"}
@@ -132,5 +138,13 @@ def test_backlinks_and_rewrite_cover_every_kind_of_file(tmp_path):
 def test_rewrite_without_done_leaves_done_pages(tmp_path):
     _write(tmp_path, "Project details/Done/Old.md", "[[Target]]\n")
     vault = load_vault(tmp_path)
-    assert rewrite_everywhere(vault, "Target", "New", done=False).count == 0
+    assert rewrite_everywhere(vault, Retarget("Target", "New"), done=False).count == 0
     assert (tmp_path / "Project details/Done/Old.md").read_text() == "[[Target]]\n"
+
+
+def test_find_heading_ignores_fenced_text(tmp_path):
+    from gtd_ci.projects import find_heading, section_bounds
+
+    lines = ["# G", "## Notes", "```", "## Other", "```", "tail", "## End"]
+    assert find_heading(["```", "## Notes", "```"], "Notes") is None
+    assert section_bounds(lines, 1) == 6

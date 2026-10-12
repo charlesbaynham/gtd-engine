@@ -528,8 +528,11 @@ Automation never reorganises a note. It may only:
   **rename** it, and **delete** it on request. A rename or move retargets
   every link to it in the table cells, the Inbox and Tickler lines, active
   and `Done/` project pages and other reference notes, as §6 "Renaming"
-  does for a project (a move rewrites only the links that carry a folder
-  prefix, since a bare `[[Name]]` still resolves).
+  does for a project. A prefixed link (`[[A/Name]]`, `[[Reference/A/Name]]`)
+  counts as pointing at a note only if its prefix is a path-suffix of that
+  note's folder. A move rewrites just those prefixed links, to the new
+  folder; a bare `[[Name]]` still resolves. Where two notes share a stem
+  the bare links cannot be attributed and are left alone.
 
-The nightly jobs (§7) never read or write `Reference/`; the only change they
-can cause there is the link rewrite above when a project is renamed.
+The nightly jobs (§7) never read or write `Reference/`. Nothing but those link
+rewrites, including the one a project rename causes, touches it unasked.

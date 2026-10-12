@@ -22,6 +22,10 @@ from gtd_ci import lines as linesmod
 from gtd_ci import projects as projectsmod
 from gtd_ci import links as linksmod
 from gtd_ci import reference as referencemod
+from gtd_ci.names import NameRejected, usable_file_name
+from gtd_ci.names import levenshtein as _levenshtein
+from gtd_ci.names import near_names as _near_names
+from gtd_ci.names import normalize as _normalize
 from gtd_ci.dates import parse_date
 from gtd_ci.lines import Item
 from gtd_ci.model import TICKLER_OFFSETS, Vault, mark_dirty
@@ -143,22 +147,6 @@ def _validate_status(value: str | None) -> str:
     return value
 
 
-def _normalize(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", name.lower())
-
-
-def _levenshtein(a: str, b: str) -> int:
-    if a == b:
-        return 0
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, start=1):
-        cur = [i] + [0] * len(b)
-        for j, cb in enumerate(b, start=1):
-            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
-        prev = cur
-    return prev[-1]
-
-
 def resolve_project_stem(vault: Vault, name: str) -> str:
     """Resolves a project name to its stem per FORMAT.md §6, or raises OpError
     with near-name suggestions (Levenshtein <= 3 over [a-z0-9]) when it can't."""
@@ -190,26 +178,6 @@ def nearest_project_stem(vault: Vault, name: str) -> tuple[str | None, list[str]
         return link.resolved.stem, []
 
     return _near_names(sorted({p.stem for paths in vault.project_index.values() for p in paths if "Done" not in p.parts}), name)
-
-
-def _near_names(names: list[str], name: str) -> tuple[str | None, list[str]]:
-    """The names within a normalised Levenshtein distance of
-    `max(2, len(norm(name)) // 4)` of `name`, or (for a `name` of 4+ chars)
-    whose normalised form starts with or contains it. Exactly one candidate
-    resolves to `(it, [it])`; anything else is `(None, candidates)`."""
-    target = _normalize(name)
-    threshold = max(2, len(target) // 4)
-    candidates: set[str] = set()
-    for candidate in names:
-        norm = _normalize(candidate)
-        if _levenshtein(norm, target) <= threshold:
-            candidates.add(candidate)
-        elif len(target) >= 4 and (norm.startswith(target) or target in norm):
-            candidates.add(candidate)
-    ordered = sorted(candidates)
-    if len(ordered) == 1:
-        return ordered[0], ordered
-    return None, ordered
 
 
 def _find_loaded_project(vault: Vault, stem: str) -> tuple[projectsmod.ProjectPage, str]:
@@ -250,21 +218,9 @@ def _append_or_fill_item(lines: list[str], text: str) -> list[str]:
     return lines
 
 
-def _reparse_project(page: projectsmod.ProjectPage) -> None:
-    """Re-derive the Next Actions bounds and items from `page.lines`, after an
-    edit that may have shifted them."""
-    page.heading_index = projectsmod.find_next_actions_heading(page.lines)
-    if page.heading_index is None:
-        page.section_end = len(page.lines)
-        page.items = []
-        return
-    page.section_end = projectsmod.section_bounds(page.lines, page.heading_index)
-    page.items = projectsmod.parse_items(page.lines, page.heading_index + 1, page.section_end)
-
-
 def _add_item_to_project(page: projectsmod.ProjectPage, text: str) -> None:
     page.lines = _append_or_fill_item(page.lines, text)
-    _reparse_project(page)
+    projectsmod.reparse(page)
 
 
 def _tick_item(page: projectsmod.ProjectPage, item: projectsmod.ProjectItem) -> None:
@@ -355,7 +311,7 @@ def _remove(loc: Located) -> None:
     else:
         page = loc.container
         del page.lines[loc.obj.line_index]
-        _reparse_project(page)
+        projectsmod.reparse(page)
 
 
 def _surfacing_entries(vault: Vault, page: projectsmod.ProjectPage, text: str):
@@ -600,14 +556,15 @@ def triage(vault: Vault, today: date, *, handle: str, to: str, text: str | None 
         note = find_reference(vault, name)
         created = note is None
         if created:
+            _append_prose([], "triage", text, DEFAULT_NOTE_HEADING, True, today)  # fail before anything exists
             folder, _, stem = name.strip().removesuffix(".md").rpartition("/")
-            # Validate the text against the note-to-be before anything exists.
-            lines, _ = _append_prose(_titled(stem, "").split("\n"), "triage", text, DEFAULT_NOTE_HEADING, True, today)
-            note = _new_reference(vault, "triage", stem, folder, "\n".join(lines))
-        else:
-            note.lines, _ = _append_prose(note.lines, "triage", text, DEFAULT_NOTE_HEADING, True, today)
-            note.trailing_newline = True
-            mark_dirty(vault, note.relpath)
+            _, near = _near_names([n.stem for n in vault.reference_notes().values()], stem)
+            if near:
+                payload["did_you_mean"] = near
+            note = _new_reference(vault, "triage", stem, folder, "")
+        note.lines, _ = _append_prose(note.lines, "triage", text, DEFAULT_NOTE_HEADING, True, today)
+        note.trailing_newline = True
+        mark_dirty(vault, note.relpath)
         payload.update(reference=note.relpath, reference_created=created)
     else:
         raise OpError(f"triage: unknown destination {to!r}")
@@ -836,6 +793,7 @@ def create_project(
         raise OpError("create_project: name must not be blank")
     if name_v.lower() in vault.project_index:
         raise OpError(f"create_project: a project named {name_v!r} already exists")
+    _require_no_reference_stem(vault, "create_project", name_v)
 
     template_path = vault.root / "Project details" / "-Project template.md"
     if not template_path.is_file():
@@ -960,7 +918,7 @@ def append_project_note(
         page.lines, "append_project_note", text, heading, dated, today,
         reserved=("next actions", "'## Next Actions' holds actions, not notes; use add_project_action"),
     )
-    _reparse_project(page)
+    projectsmod.reparse(page)
     mark_dirty(vault, relpath)
     return OpResult(
         f'Appended a note to "{stem}" under "## {payload["heading"]}"', set(vault.dirty), payload
@@ -1026,7 +984,7 @@ def set_project_goal(vault: Vault, today: date, *, project: str, goal: str) -> O
     # paragraph needs its own blank line to stay a paragraph.
     separator = [""] if start == end and start < len(page.lines) else []
     page.lines[start:end] = body + separator
-    _reparse_project(page)
+    projectsmod.reparse(page)
     mark_dirty(vault, relpath)
     return OpResult(
         f'Set the goal of "{stem}"',
@@ -1049,22 +1007,16 @@ def star_project(vault: Vault, today: date, *, project: str, starred: bool = Tru
         page.lines[:] = projectsmod.set_starred(page.lines, starred)
     except ParseFailure as exc:
         raise OpError(f"star_project: {relpath}: {exc}") from exc
-    _reparse_project(page)
+    projectsmod.reparse(page)
     mark_dirty(vault, relpath)
     return OpResult(f'{verb} "{stem}"', set(vault.dirty), {"starred": starred, "changed": True})
 
 
-_BAD_NAME_CHARS = set('/\\[]#|^:*?"<>')
-
-
 def _usable_file_name(op: str, label: str, value: str) -> str:
-    name = " ".join(value.split())
-    if not name:
-        raise OpError(f"{op}: {label} must not be blank")
-    bad = sorted(set(name) & _BAD_NAME_CHARS)
-    if bad or name.startswith("."):
-        raise OpError(f"{op}: {name!r} is not a usable file name ({' '.join(bad) or 'leading dot'})")
-    return name
+    try:
+        return usable_file_name(label, value)
+    except NameRejected as exc:
+        raise OpError(f"{op}: {exc}") from exc
 
 
 def rename_project(vault: Vault, today: date, *, project: str, new_name: str) -> OpResult:
@@ -1085,12 +1037,13 @@ def rename_project(vault: Vault, today: date, *, project: str, new_name: str) ->
         raise OpError(f"rename_project: the project is already called {stem!r}")
     if new_v.lower() != stem.lower() and new_v.lower() in vault.project_index:
         raise OpError(f"rename_project: a project named {new_v!r} already exists")
+    _require_no_reference_stem(vault, "rename_project", new_v)
 
     old_path = page.path
     new_path = old_path.with_name(f"{new_v}.md")
     new_relpath = str(new_path.relative_to(vault.root))
 
-    rewritten = linksmod.rewrite_everywhere(vault, stem, new_v, done=False).count
+    rewritten = linksmod.rewrite_everywhere(vault, linksmod.Retarget(stem, new_v), done=False).count
 
     unmanaged = 0
     managed = {str(p.path) for p in vault.projects.values()} | {str(n.path) for n in vault.reference_notes().values()}
@@ -1254,50 +1207,42 @@ def archive_project(vault: Vault, today: date, *, name: str) -> OpResult:
 
 
 def find_reference(vault: Vault, name: str) -> referencemod.ReferenceNote | None:
-    """The note `name` denotes, or None: an exact stem, else a unique
-    case-insensitive one; a `Sub/Name` form matches the path below
-    `Reference/`. Several matches raise, naming every candidate path."""
-    key = name.strip().removesuffix(".md").removeprefix(f"{referencemod.REFERENCE_DIR}/")
-    notes = list(vault.reference_notes().values())
-
-    def below_reference(note) -> str:
-        return note.relpath.removeprefix(f"{referencemod.REFERENCE_DIR}/").removesuffix(".md")
-
-    field = below_reference if "/" in key else (lambda note: note.stem)
-    hits = [n for n in notes if field(n) == key] or [n for n in notes if field(n).lower() == key.lower()]
-    if len(hits) > 1:
-        raise OpError(f"reference note {name!r} is ambiguous: {', '.join(n.relpath for n in hits)}")
-    return hits[0] if hits else None
+    try:
+        return referencemod.find_note(vault.reference_notes(), name)
+    except NameRejected as exc:
+        raise OpError(str(exc)) from exc
 
 
 def resolve_reference(vault: Vault, name: str) -> referencemod.ReferenceNote:
-    note = find_reference(vault, name)
-    if note is not None:
-        return note
-    _, near = _near_names([n.stem for n in vault.reference_notes().values()], name)
-    hint = f"; did you mean: {', '.join(near)}?" if near else ""
-    raise OpError(f"no reference note named {name!r}{hint}")
+    try:
+        return referencemod.resolve_note(vault.reference_notes(), name)
+    except NameRejected as exc:
+        raise OpError(str(exc)) from exc
 
 
-def reference_folder(op: str, folder: str | None) -> str:
-    """A subfolder of `Reference/` as 'A/B' ('' for the top level)."""
-    parts = (folder or "").replace("\\", "/").strip("/").removeprefix(f"{referencemod.REFERENCE_DIR}/").split("/")
-    parts = [] if parts == [referencemod.REFERENCE_DIR] else parts
-    return "/".join(_usable_file_name(op, "folder", part) for part in parts if part)
+def _reference_folder(op: str, folder: str | None) -> str:
+    try:
+        return referencemod.normalise_folder(folder)
+    except NameRejected as exc:
+        raise OpError(f"{op}: {exc}") from exc
 
 
 def _reference_relpath(stem: str, folder: str) -> str:
     return "/".join(p for p in (referencemod.REFERENCE_DIR, folder, f"{stem}.md") if p)
 
 
-def _require_free_stem(vault: Vault, op: str, stem: str, *, ignoring: referencemod.ReferenceNote | None = None) -> None:
-    """A link names only a stem, so a stem a project or another note already
-    answers to would make `[[stem]]` ambiguous."""
-    if stem.lower() in vault.project_index:
-        raise OpError(f"{op}: a project is already called {stem!r}; a link to it would be ambiguous")
+def _require_no_reference_stem(vault: Vault, op: str, stem: str, *, ignoring: referencemod.ReferenceNote | None = None) -> None:
+    """A link names only a stem, so a stem a reference note already answers
+    to would make `[[stem]]` ambiguous."""
     clash = next((n for n in vault.reference_notes().values() if n is not ignoring and n.stem.lower() == stem.lower()), None)
     if clash is not None:
-        raise OpError(f"{op}: {clash.relpath} already exists")
+        raise OpError(f"{op}: {clash.relpath} already exists; a link to {stem!r} would be ambiguous")
+
+
+def _require_free_stem(vault: Vault, op: str, stem: str, *, ignoring: referencemod.ReferenceNote | None = None) -> None:
+    if stem.lower() in vault.project_index:
+        raise OpError(f"{op}: a project is already called {stem!r}; a link to it would be ambiguous")
+    _require_no_reference_stem(vault, op, stem, ignoring=ignoring)
 
 
 def _titled(stem: str, text: str) -> str:
@@ -1313,7 +1258,7 @@ def _titled(stem: str, text: str) -> str:
 
 def _new_reference(vault: Vault, op: str, stem: str, folder: str, text: str) -> referencemod.ReferenceNote:
     stem = _usable_file_name(op, "name", stem.removesuffix(".md"))
-    folder = reference_folder(op, folder)
+    folder = _reference_folder(op, folder)
     _require_free_stem(vault, op, stem)
     relpath = _reference_relpath(stem, folder)
     path = vault.root / relpath
@@ -1360,7 +1305,8 @@ def append_reference(
 
 def edit_reference(vault: Vault, today: date, *, name: str, old: str, new: str) -> OpResult:
     """Replace the one occurrence of the exact text `old` in a reference note
-    with `new`. No occurrence, or several, is refused and nothing changes."""
+    with `new`. No occurrence, or several (overlapping ones count), is refused
+    and nothing changes."""
     note = resolve_reference(vault, name)
     old, new = (t.replace("\r\n", "\n") for t in (old, new))
     if not old:
@@ -1368,7 +1314,7 @@ def edit_reference(vault: Vault, today: date, *, name: str, old: str, new: str) 
     if old == new:
         raise OpError("edit_reference: old and new are identical")
     text = note.text
-    count = text.count(old)
+    count = len(re.findall(f"(?={re.escape(old)})", text))
     if count == 0:
         raise OpError(f"edit_reference: the text to replace was not found in {note.relpath}")
     if count > 1:
@@ -1393,12 +1339,27 @@ def _relocate_reference(
     vault: Vault, op: str, note: referencemod.ReferenceNote, stem: str, folder: str
 ) -> OpResult:
     old_stem, old_relpath, old_path = note.stem, note.relpath, note.path
+    if old_stem.lower() in vault.project_index:
+        raise OpError(f"{op}: a project is also called {old_stem!r}, so its links cannot be told apart from this note's")
     new_relpath = _reference_relpath(stem, folder)
     new_path = vault.root / new_relpath
     if new_path.exists() and not new_path.samefile(old_path):
         raise OpError(f"{op}: {new_relpath} already exists")
 
-    rewritten = linksmod.rewrite_everywhere(vault, old_stem, stem, done=True)
+    shares_stem = any(n is not note and n.stem.lower() == old_stem.lower() for n in vault.reference_notes().values())
+    moving = stem == old_stem
+
+    def prefix_for(prefix: str) -> str:
+        if not moving:
+            return prefix
+        top = f"{referencemod.REFERENCE_DIR}/" if prefix.lower().startswith(f"{referencemod.REFERENCE_DIR.lower()}/") else ""
+        return top + (f"{folder}/" if folder else "")
+
+    retarget = linksmod.Retarget(
+        old_stem, stem, within=referencemod.reference_dir(note),
+        bare=not (moving or shares_stem), prefix_for=prefix_for,
+    )
+    rewritten = linksmod.rewrite_everywhere(vault, retarget, done=True)
     write_raw(RawFile(old_path, note.lines, note.trailing_newline))
     new_path.parent.mkdir(parents=True, exist_ok=True)
     old_path.rename(new_path)
@@ -1409,17 +1370,23 @@ def _relocate_reference(
     vault.dirty.discard(old_relpath)
     note.path, note.relpath = new_path, new_relpath
     notes[new_relpath] = note
+    payload = {"old_path": old_relpath, "new_path": new_relpath, "rewritten_links": rewritten.count}
+    if shares_stem:
+        payload["ambiguous_links"] = rewritten.bare_left
     return OpResult(
         f'Moved reference note "{old_stem}" to {new_relpath}',
         set(vault.dirty) | {old_relpath, new_relpath} | rewritten.written_directly,
-        {"old_path": old_relpath, "new_path": new_relpath, "rewritten_links": rewritten.count},
+        payload,
     )
 
 
 def rename_reference(vault: Vault, today: date, *, name: str, new_name: str) -> OpResult:
     """Rename a reference note in place and rewrite every link to it — in the
     tables, Inbox, Tickler, project pages (Done/ included) and other
-    reference notes — keeping each link's alias and heading."""
+    reference notes — keeping each link's alias, heading and folder prefix.
+    If another note shares its stem, only links whose prefix names this
+    note's folder are rewritten; the unprefixed ones cannot be attributed and
+    are counted as `ambiguous_links`."""
     note = resolve_reference(vault, name)
     stem = _usable_file_name("rename_reference", "new_name", new_name.removesuffix(".md"))
     if stem == note.stem:
@@ -1430,10 +1397,13 @@ def rename_reference(vault: Vault, today: date, *, name: str, new_name: str) -> 
 
 def move_reference(vault: Vault, today: date, *, name: str, folder: str) -> OpResult:
     """Move a reference note to another subfolder of `Reference/` (an empty
-    `folder` is `Reference/` itself). Links that name a folder, such as
-    `[[Old/Name]]`, are rewritten; a bare `[[Name]]` still resolves."""
+    `folder` is `Reference/` itself). Links that spell out its old folder,
+    such as `[[House/Name]]` or `[[Reference/House/Name]]`, are rewritten to
+    the new one (`[[Electrics/Name]]`, bare `[[Name]]` for the top level); a
+    bare `[[Name]]` still resolves and is left alone. If another note shares
+    the stem, the bare links are counted as `ambiguous_links`."""
     note = resolve_reference(vault, name)
-    target = reference_folder("move_reference", folder)
+    target = _reference_folder("move_reference", folder)
     if target == note.folder:
         raise OpError(f"move_reference: {note.relpath} is already in that folder")
     return _relocate_reference(vault, "move_reference", note, note.stem, target)
@@ -1443,7 +1413,10 @@ def delete_reference(vault: Vault, today: date, *, name: str) -> OpResult:
     """Delete a reference note outright (git keeps the history). The payload
     carries a `warning` naming any files that still link to it."""
     note = resolve_reference(vault, name)
-    linked = [b for b in linksmod.backlinks(vault, note.stem) if b["path"] != note.relpath]
+    linked = [
+        b for b in linksmod.backlinks(vault, note.stem, within=referencemod.reference_dir(note))
+        if b["path"] != note.relpath
+    ]
     note.path.unlink()
     _remove_empty_reference_dirs(vault, note.path)
     del vault.reference_notes()[note.relpath]

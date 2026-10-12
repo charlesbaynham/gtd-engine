@@ -17,17 +17,62 @@ from .model import Vault, mark_dirty
 from .vault import ParseFailure, RawFile, load_raw, write_raw
 
 
-def link_pattern(name: str, *, folder_prefixed_only: bool = False) -> re.Pattern:
-    prefix = r"(?:[^\]|#]*/)" + ("" if folder_prefixed_only else "?")
-    return re.compile(r"\[\[" + prefix + re.escape(name) + r"\s*((?:#|\\?\|)[^\]]*)?\]\]", re.IGNORECASE)
+def link_pattern(name: str) -> re.Pattern:
+    """Groups: 1 the folder prefix ('' or 'A/'), 2 the heading/alias suffix."""
+    return re.compile(r"\[\[((?:[^\]|#]*/)?)" + re.escape(name) + r"\s*((?:#|\\?\|)[^\]]*)?\]\]", re.IGNORECASE)
 
 
-def rewrite_links(text: str, old: str, new: str) -> str:
-    """Every link to `old` in `text`, retargeted to `new` with its alias and
-    heading kept. With `old == new` (a move) only folder-prefixed links
-    change: a bare link survives a move, a prefixed one does not."""
-    pattern = link_pattern(old, folder_prefixed_only=old == new)
-    return pattern.sub(lambda m: f"[[{new}{m.group(1) or ''}]]", text)
+def _prefix_points_at(prefix: str, directory: str) -> bool:
+    wanted, have = prefix.rstrip("/").lower(), directory.lower()
+    return have == wanted or have.endswith("/" + wanted)
+
+
+def _targets_note_in(match: re.Match, within: str | None) -> bool:
+    """Whether a link names the note living in directory `within`: a bare
+    link does, a prefixed one only if its prefix is a path-suffix of that
+    directory. `within=None` accepts any prefix (project pages)."""
+    prefix = match.group(1)
+    return within is None or not prefix or _prefix_points_at(prefix, within)
+
+
+def _drop_prefix(prefix: str) -> str:
+    return ""
+
+
+@dataclass(frozen=True)
+class Retarget:
+    """Retarget links to `old` as `new`, keeping each alias and heading.
+
+    `within` is the target's real directory, so that links to a same-named
+    note elsewhere are left alone. With `bare=False` unprefixed links are
+    not rewritten (they stay valid, or are ambiguous). `prefix_for` gives the
+    new folder prefix of a rewritten prefixed link.
+    """
+
+    old: str
+    new: str
+    within: str | None = None
+    bare: bool = True
+    prefix_for: Callable[[str], str] = _drop_prefix
+
+
+def rewrite_links(text: str, retarget: Retarget) -> tuple[str, int]:
+    """`text` with the matching links rewritten, and the count of bare links
+    left unrewritten because `retarget.bare` is false."""
+    bare_left = 0
+
+    def replace(m: re.Match) -> str:
+        nonlocal bare_left
+        prefix = m.group(1)
+        if not _targets_note_in(m, retarget.within):
+            return m.group(0)
+        if not prefix and not retarget.bare:
+            bare_left += 1
+            return m.group(0)
+        new_prefix = retarget.prefix_for(prefix) if prefix else ""
+        return f"[[{new_prefix}{retarget.new}{m.group(2) or ''}]]"
+
+    return link_pattern(retarget.old).sub(replace, text), bare_left
 
 
 @dataclass
@@ -82,8 +127,7 @@ def _project_sites(vault: Vault) -> Iterator[_Site]:
         def store(units, page=page, relpath=relpath):
             if units != page.lines:
                 page.lines = units
-                page.section_end = projectsmod.section_bounds(units, page.heading_index)
-                page.items = projectsmod.parse_items(units, page.heading_index + 1, page.section_end)
+                projectsmod.reparse(page)
                 mark_dirty(vault, relpath)
 
         yield _Site("project", relpath, list(page.lines), store)
@@ -124,12 +168,13 @@ def _sites(vault: Vault, *, done: bool) -> Iterator[_Site]:
         yield from _done_sites(vault)
 
 
-def backlinks(vault: Vault, name: str) -> list[dict]:
-    """Which files link to `name`: `[{kind, path, count}]`, in vault order."""
+def backlinks(vault: Vault, name: str, within: str | None = None) -> list[dict]:
+    """Which files link to `name` (the note in directory `within`, if given):
+    `[{kind, path, count}]`, in vault order."""
     pattern = link_pattern(name)
     out = []
     for site in _sites(vault, done=True):
-        count = sum(len(pattern.findall(u)) for u in site.units)
+        count = sum(_targets_note_in(m, within) for u in site.units for m in pattern.finditer(u))
         if count:
             out.append({"kind": site.kind, "path": site.relpath, "count": count})
     return out
@@ -137,18 +182,21 @@ def backlinks(vault: Vault, name: str) -> list[dict]:
 
 @dataclass
 class Rewrite:
-    count: int = 0  # units (cells, lines, items) changed
-    written_directly: set[str] = field(default_factory=set)  # Done/ pages, which the loaded vault does not own
+    count: int = 0
+    written_directly: set[str] = field(default_factory=set)
+    bare_left: int = 0
 
 
-def rewrite_everywhere(vault: Vault, old: str, new: str, *, done: bool) -> Rewrite:
-    """Retarget every link to `old` as `new` in the tables, Inbox, Tickler,
-    active project pages and reference notes (and Done/ pages when `done`).
-    Loaded files are marked dirty for `save_vault`; Done/ pages are written
-    at once and named in the result."""
+def rewrite_everywhere(vault: Vault, retarget: Retarget, *, done: bool) -> Rewrite:
+    """Apply `retarget` in the tables, Inbox, Tickler, active project pages
+    and reference notes (and Done/ pages when `done`). Loaded files are marked
+    dirty for `save_vault`; Done/ pages are written at once and named in the
+    result."""
     result = Rewrite()
     for site in _sites(vault, done=done):
-        units = [rewrite_links(u, old, new) for u in site.units]
+        rewritten = [rewrite_links(u, retarget) for u in site.units]
+        units = [text for text, _ in rewritten]
+        result.bare_left += sum(left for _, left in rewritten)
         changed = sum(a != b for a, b in zip(units, site.units))
         if changed:
             result.count += changed

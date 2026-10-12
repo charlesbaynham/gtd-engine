@@ -147,12 +147,16 @@ class Store:
                 vault = load_vault(self.root)
                 try:
                     result = op(vault, today, **kwargs)
+                    save_vault(vault)
                 except Stale as exc:
+                    self._discard()
                     return WriteOutcome(ok=False, stale={"handle": exc.handle, "reason": exc.reason})
                 except OpError as exc:
+                    self._discard()
                     return WriteOutcome(ok=False, error=str(exc))
-
-                save_vault(vault)
+                except BaseException:
+                    self._discard()  # ops move and delete files directly, before save_vault
+                    raise
 
                 if dry_run:
                     diff = self._diff(sorted(result.changed_files))
