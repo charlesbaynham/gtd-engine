@@ -39,6 +39,7 @@ verbatim; the only keys automation reads are `gtd` and, on a project page,
 | `CI status.md` | `ci-status` | written by CI, never read |
 | `reMarkable status.md` | `remarkable-status` | written by the reMarkable job, never read |
 | `.remarkable.json` | — | the reMarkable job's record of the newest sheet applied, §8.1 |
+| `.remarkable-reference.json` | — | the reMarkable job's record of the reference notes on the device, §8.1 |
 
 CI finds managed files by these fixed paths and checks the `gtd` value; a
 mismatch or missing front matter is a parse failure for that file. The plugin
@@ -456,6 +457,12 @@ sheet applied to the vault, or `null` before the first. It is committed with
 the edits that sheet produced, and no sheet rendered at or before it is read
 again. Never edit it; deleting it makes the next run treat every sheet in the
 device's archive as already applied.
+
+`.remarkable-reference.json` is the same job's record of the reference notes
+it has put on the device: `{"Reference/<path>.md": {"sha": "<sha256 of the
+note>", "uploaded": "<YYYY-MM-DDTHH:MM:SSZ>"}}`. A note whose sha differs is
+re-rendered and replaced; one no longer in the vault is removed from the
+device. Never edit it; deleting it re-uploads every note.
 
 ## 9. Parse failures and safety
 

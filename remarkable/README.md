@@ -5,7 +5,7 @@ prints, and turns the decisions JSON its scanner produces back into vault
 edits through `gtd_mcp.ops` (so FORMAT.md is honoured by construction).
 
 ```
-gtd-remarkable tasks | render | scan | apply | process | publish
+gtd-remarkable tasks | render | scan | apply | process | publish | reference-sync
 ```
 
 `SETUP.md` § 10 turns it on; `.gitlab-ci.yml` is the nightly job itself.
@@ -178,3 +178,34 @@ Projects summary, one page per project, and a New Projects page.
   or an operation that cannot be carried out is reported in
   `reMarkable status.md` (Applied / Notes / Skipped / Warnings) and the row
   is left as it was.
+
+## Reference notes on the device
+
+`gtd-remarkable reference-sync` mirrors `Reference/` onto the tablet, one
+device-sized PDF per note, in `GTD Reference/` (`REMARKABLE_REFERENCE_FOLDER`)
+with the note's subfolders as device subfolders. Every page has a ✦ AI box;
+the last page is a notes page of six blank lines.
+
+- **Changed notes are re-rendered.** The vault records each uploaded note's
+  sha256 in `.remarkable-reference.json` (committed with the run); a note that
+  differs is rendered and replaced. Unchanged notes cost no device calls.
+- **Ink is read before a copy is replaced.** The device copy is downloaded
+  first; if it holds strokes they are scanned and applied (lines on the notes
+  page are appended to the note under today's date; a ✦ AI page is interpreted
+  into appends, exact-text edits or Inbox captures), and only then is the note
+  re-rendered from its updated text. Ink anywhere else without ✦ AI is
+  reported, not read. An edit whose quoted text is missing or ambiguous is a
+  warning, never a guess. Ink that will not parse leaves the copy alone and
+  fails the run.
+- **`--read-ink`** also downloads every unchanged note's copy. That is a
+  download per note, so the hourly run leaves it off and a daily schedule turns
+  it on (`remarkable_reference_read_ink` / `REMARKABLE_REFERENCE_READ_INK`);
+  until then ink on an unchanged note waits on the device.
+- **Deleted or renamed notes** are removed from the device, or moved to
+  `GTD Reference/Archive` with a warning if they were written on.
+- Results go in a `# Reference notes` section of `reMarkable status.md`.
+
+Replacing a copy discards what is on it. Anything the tablet had not synced
+yet is lost, and so is ink the agent could not interpret, which is reported
+as a warning; the downloaded copy is kept in the run's `remarkable-out/`
+artifact for two weeks.
