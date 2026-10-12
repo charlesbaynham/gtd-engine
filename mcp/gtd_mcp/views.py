@@ -6,15 +6,20 @@ what a write tool needs.
 """
 from __future__ import annotations
 
+import mimetypes
 import re
+from pathlib import Path
 from typing import Any
 
+from gtd_ci import links as linksmod
 from gtd_ci import lines as linesmod
 from gtd_ci import projects as projectsmod
 from gtd_ci.dates import format_date, parse_date
 from gtd_ci.model import TICKLER_OFFSETS, Vault
+from gtd_ci.reference import ReferenceNote
 from gtd_ci.tables import ManagedTable, is_placeholder
 
+from .ops import OpError, reference_folder, resolve_reference
 from .handles import enumerate_logical, hash_cells, hash_text, make_handle
 
 _INBOX_PROV = re.compile(r"^\[from ([^,\]]+)(?:, ([^\]]*))?\]\s*")
@@ -257,3 +262,103 @@ def get_project(vault: Vault, name: str, include_body: bool = False) -> dict[str
 
 def all_tickler_buckets() -> list[str]:
     return [name.removesuffix(".md") for name in TICKLER_OFFSETS]
+
+
+# --- reference notes (FORMAT.md §11) ---
+
+
+def _reference_summary(note: ReferenceNote) -> dict[str, Any]:
+    return {
+        "stem": note.stem,
+        "path": note.relpath,
+        "folder": note.folder,
+        "title": note.title,
+        "headings": [{"level": h["level"], "text": h["text"]} for h in note.headings],
+        "embeds": note.embeds,
+    }
+
+
+def reference_notes(vault: Vault, folder: str | None = None) -> list[dict[str, Any]]:
+    """Every note under `Reference/` (or only under `folder`, subfolders
+    included), by path."""
+    wanted = reference_folder("list_reference", folder)
+    notes = sorted(vault.reference_notes().values(), key=lambda n: n.relpath.lower())
+    return [
+        _reference_summary(n) for n in notes
+        if not wanted or n.folder == wanted or n.folder.startswith(f"{wanted}/")
+    ]
+
+
+def get_reference(vault: Vault, name: str, section: str | None = None) -> dict[str, Any]:
+    """One note with its verbatim `body`; with `section`, only that level-2
+    section (heading line included)."""
+    note = resolve_reference(vault, name)
+    if section is None:
+        body = note.text
+    else:
+        lines = note.section(section)
+        if lines is None:
+            raise OpError(
+                f"{note.relpath} has no '## {section.strip()}' section; "
+                f"its level-2 headings are: {', '.join(h['text'] for h in note.headings if h['level'] == 2) or 'none'}"
+            )
+        body = "\n".join(lines) + "\n"
+    return {
+        **_reference_summary(note),
+        "links": note.links,
+        "size": note.size,
+        "linked_from": [b for b in backlinks(vault, note.stem) if b["path"] != note.relpath],
+        "section": section.strip() if section is not None else None,
+        "body": body,
+    }
+
+
+def backlinks(vault: Vault, stem: str) -> list[dict[str, Any]]:
+    """The files that link to `stem`: `[{kind, path, count}]`."""
+    return linksmod.backlinks(vault, stem)
+
+
+_EXCERPT_CHARS = 200
+
+
+def search_reference(vault: Vault, query: str) -> list[dict[str, Any]]:
+    """Notes whose text contains `query` (case-insensitive), each with the
+    matching lines and the heading they sit under."""
+    needle = query.lower()
+    out = []
+    for note in sorted(vault.reference_notes().values(), key=lambda n: n.relpath.lower()):
+        headings = note.headings
+        matches = []
+        for line_no, line in enumerate(note.lines, start=1):
+            if needle in line.lower():
+                under = [h["text"] for h in headings if h["line_no"] <= line_no]
+                matches.append({"heading": under[-1] if under else None, "line_no": line_no, "excerpt": line.strip()[:_EXCERPT_CHARS]})
+        if matches:
+            out.append({"stem": note.stem, "path": note.relpath, "matches": matches})
+    return out
+
+
+# --- attachments ---
+
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+TEXT_MIMES = {"application/json", "application/xml", "application/x-yaml"}
+IMAGE_FORMATS = {"image/png": "png", "image/jpeg": "jpeg", "image/webp": "webp", "image/gif": "gif"}
+
+
+def attachment_file(vault: Vault, name: str) -> Path:
+    """The file `attachments/<name>`, which must exist and resolve to a place
+    inside `attachments/` (no `..`, no absolute path, no symlink out)."""
+    base = (vault.root / "attachments").resolve()
+    path = (base / name).resolve()
+    if base not in path.parents:
+        raise ValueError(f"attachment {name!r} is not inside attachments/")
+    if not path.is_file():
+        raise ValueError(f"no attachment named {name!r}")
+    size = path.stat().st_size
+    if size > MAX_ATTACHMENT_BYTES:
+        raise ValueError(f"attachment {name!r} is {size} bytes, over the {MAX_ATTACHMENT_BYTES}-byte limit")
+    return path
+
+
+def attachment_mime(path: Path) -> str:
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
