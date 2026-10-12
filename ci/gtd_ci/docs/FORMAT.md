@@ -459,10 +459,14 @@ again. Never edit it; deleting it makes the next run treat every sheet in the
 device's archive as already applied.
 
 `.remarkable-reference.json` is the same job's record of the reference notes
-it has put on the device: `{"Reference/<path>.md": {"sha": "<sha256 of the
-note>", "uploaded": "<YYYY-MM-DDTHH:MM:SSZ>"}}`. A note whose sha differs is
-re-rendered and replaced; one no longer in the vault is removed from the
-device. Never edit it; deleting it re-uploads every note.
+it has put on the device: `{"notes": {"Reference/<path>.md": {"sha": "<sha256
+of the note>", "uploaded": "<YYYY-MM-DDTHH:MM:SSZ>"}}, "archive": {...}}`. A
+note whose sha differs is re-rendered and replaced; the replaced device copy
+is moved to an archive folder (`<reference folder>/Archive/`) listed under
+`archive` until the ink on it has been applied or `--keep-days` pass. Never
+edit it. Deleting it re-uploads every note and forgets which notes were on the
+device, so a note deleted from the vault afterwards leaves its device copy
+behind.
 
 ## 9. Parse failures and safety
 

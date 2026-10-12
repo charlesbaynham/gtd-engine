@@ -100,6 +100,12 @@ def test_ai_without_reading_quotes_the_suggested_lines(root):
     assert "no reading" in report.warnings[0] and "Ring Dave" in report.warnings[0]
 
 
+def test_scanner_and_apply_do_not_both_report_a_missing_reading(root):
+    pg = page(ai=True, warnings=["page 1: ✦ AI is ticked but the 'null' engine gave no reading", "page 1: poor registration"])
+    _, report = apply(root, pg)
+    assert sum("no reading" in w for w in report.warnings) == 1 and any("poor registration" in w for w in report.warnings)
+
+
 def test_ai_page_does_not_also_apply_its_lines(root):
     rows = [{"id": "RF-C1", "inked": True, "act_text": "would double-write"}]
     vault, _ = apply(root, page(ai=True, rows=rows, reading=reading(op("capture", text="once"))))
@@ -125,27 +131,52 @@ def test_skipped_and_errored_pages(root):
 
 # --- reference-sync against a fake device -------------------------------------------------
 
+ARCHIVE = "GTD Reference/Archive"
+
 
 class FakeDevice:
     """`remarkable_gtd.rm.api` over a dict of remote path -> blob."""
 
-    def __init__(self, tmp_path: Path):
+    def __init__(self):
+        from remarkable_gtd.rm.api import RmapiError
+
+        self.error = RmapiError
         self.docs: dict[str, bytes] = {}
         self.folders: set[str] = set()
-        self.tmp = tmp_path / "dl"
         self.log: list[tuple] = []
+        self.offline = False
+        self.fail_upload = False
+        self.renders: list[str] = []
+        self.scans: list[str] = []
+        self.margin_only = False
+        self.scan_text = "from the tablet"
 
     def install(self, monkeypatch):
         from remarkable_gtd.rm import api
 
-        for name in ("write_config_from_env", "exists", "download", "upload", "remove", "move", "mkdir"):
+        for name in ("write_config_from_env", "list_dir", "download", "upload", "remove", "move", "mkdir"):
             monkeypatch.setattr(api, name, getattr(self, name))
 
     def write_config_from_env(self):
         return None
 
-    def exists(self, path):
-        return path in self.docs
+    def list_dir(self, folder):
+        from remarkable_gtd.rm.api import Entry
+
+        if self.offline:
+            raise self.error("offline")
+        folder = folder.strip("/")
+        paths = [(d, False) for d in self.docs] + [(f, True) for f in self.folders]
+        if folder and folder not in self.folders and not any(p.startswith(folder + "/") for p, _ in paths):
+            raise self.error(f"no such folder {folder}")
+        out: dict[str, bool] = {}
+        for path, is_dir in paths:
+            if folder and not path.startswith(folder + "/"):
+                continue
+            first, _, rest = path[len(folder):].lstrip("/").partition("/")
+            if first:
+                out[first] = out.get(first, False) or bool(rest) or is_dir
+        return [Entry(name, is_dir) for name, is_dir in out.items()]
 
     def mkdir(self, folder):
         self.folders.add(folder)
@@ -158,7 +189,11 @@ class FakeDevice:
         return out
 
     def upload(self, pdf, folder):
-        assert folder in self.folders, f"{folder} was not created first"
+        if self.fail_upload:
+            raise self.error("upload refused")
+        parent = folder.rpartition("/")[0]
+        assert not parent or parent in self.folders, f"{parent} was not created first"
+        self.folders.add(folder)
         self.docs[f"{folder}/{pdf.stem}"] = b"pdf:" + pdf.read_bytes()
         self.log.append(("upload", f"{folder}/{pdf.stem}"))
 
@@ -167,38 +202,51 @@ class FakeDevice:
         self.log.append(("remove", remote))
 
     def move(self, remote, dest):
+        parent = dest.rpartition("/")[0]
+        assert not parent or parent in self.folders, f"{parent} was not created first"
         self.folders.add(dest)
         self.docs[f"{dest}/{remote.rpartition('/')[2]}"] = self.docs.pop(remote)
         self.log.append(("move", remote, dest))
 
-    def scribble(self, remote):
-        self.docs[remote] = b"inked"
+    def scribble(self, remote, blob=b"inked"):
+        self.docs[remote] = blob
+
+    def archived(self) -> list[str]:
+        return sorted(d for d in self.docs if d.startswith(ARCHIVE + "/"))
 
 
 @pytest.fixture
 def device(tmp_path, monkeypatch):
     pytest.importorskip("remarkable_gtd")
-    dev = FakeDevice(tmp_path)
-    dev.install(monkeypatch)
+    import hashlib
+
     from remarkable_gtd.gen import reference as refgen
 
+    dev = FakeDevice()
+    dev.install(monkeypatch)
+
     def fake_render(note_path, vault_root, out_path, source_sha=None, the_date=None, stem=None, **_):
+        dev.renders.append(stem)
         if "|" in (stem or ""):
             raise ValueError("reference note name may not contain '|'")
         if "overflow" in Path(note_path).read_text(encoding="utf-8"):
             raise RuntimeError("body overflows")
         Path(out_path).write_bytes(f"{stem}:{source_sha}".encode())
 
+    def fake_scan(rmdoc, work_dir, cfg=None, today=None, **_):
+        dev.scans.append(rmdoc.stem)
+        stem = rmdoc.stem
+        if dev.margin_only:
+            return {"pages": [page(stem=stem, ink_elsewhere=True)]}, {}, {}, rmdoc
+        rows = [{"id": "RF-C1", "inked": True, "act_text": dev.scan_text}]
+        return {"pages": [page(stem=stem, rows=rows)]}, {}, {}, rmdoc
+
+    ticks = iter(range(10**6))
+    monkeypatch.setattr(cli, "_stamp", lambda: f"20261012T{next(ticks):06d}Z")  # runs here share a second
     monkeypatch.setattr(refgen, "render_reference", fake_render)
     monkeypatch.setattr(cli, "ink", lambda rmdoc: {b"inked": (3, 0), b"broken": (0, 1)}.get(rmdoc.read_bytes(), (0, 0)))
-    scanned = []
-
-    def fake_scan(rmdoc, work_dir, cfg=None, today=None, **_):
-        scanned.append(today)
-        return {"pages": [page(rows=[{"id": "RF-C1", "inked": True, "act_text": "from the tablet"}])]}, {}, {}, rmdoc
-
+    monkeypatch.setattr(cli, "ink_fingerprint", lambda rmdoc: hashlib.sha256(rmdoc.read_bytes()).hexdigest())
     monkeypatch.setattr("remarkable_gtd.scan.sheet.scan_rmdoc", fake_scan)
-    dev.scanned = scanned
     return dev
 
 
@@ -211,14 +259,32 @@ def state(root):
     return json.loads((root / ".remarkable-reference.json").read_text(encoding="utf-8"))
 
 
+def status(root) -> str:
+    return (root / "reMarkable status.md").read_text(encoding="utf-8")
+
+
+def hot_water(root) -> Path:
+    return root / "Reference" / "Hot water.md"
+
+
+def change_note(root, extra="More.\n"):
+    hot_water(root).write_text(hot_water(root).read_text(encoding="utf-8") + extra, encoding="utf-8")
+
+
+def cli_sha(root):
+    from remarkable_gtd.gen.reference import source_sha256
+
+    return source_sha256(hot_water(root))
+
+
 def test_new_note_is_rendered_into_a_mirrored_folder_and_recorded(root, device):
     (root / "Reference" / "House").mkdir()
     (root / "Reference" / "House" / "Boiler.md").write_text("# Boiler\n", encoding="utf-8")
     assert sync(root) == 0
     assert set(device.docs) == {"GTD Reference/Hot water", "GTD Reference/House/Boiler"}
     assert device.docs["GTD Reference/Hot water"].startswith(b"pdf:Hot water:")
-    assert set(state(root)) == {"Reference/Hot water.md", "Reference/House/Boiler.md"}
-    assert "Hot water.md" in (root / "reMarkable status.md").read_text(encoding="utf-8")
+    assert set(state(root)["notes"]) == {"Reference/Hot water.md", "Reference/House/Boiler.md"}
+    assert "Hot water.md" in status(root)
 
 
 def test_unchanged_notes_cost_no_device_calls(root, device):
@@ -228,72 +294,190 @@ def test_unchanged_notes_cost_no_device_calls(root, device):
     assert device.log == []
 
 
-def test_changed_note_with_clean_device_copy_is_replaced(root, device):
+def test_replaced_copy_is_archived_never_deleted(root, device):
     sync(root)
-    (root / "Reference" / "Hot water.md").write_text(NOTE + "More.\n", encoding="utf-8")
+    change_note(root)
     assert sync(root) == 0
-    assert ("remove", "GTD Reference/Hot water") in device.log and device.log[-1] == ("upload", "GTD Reference/Hot water")
-    assert device.scanned == []
+    assert not any(entry[0] == "remove" for entry in device.log)
+    (archived,) = device.archived()
+    assert archived.endswith("/Hot water") and state(root)["archive"][archived]["applied"] is False
+    assert device.docs["GTD Reference/Hot water"].startswith(b"pdf:") and device.scans == []
 
 
 def test_inked_copy_is_applied_before_the_replacement_is_rendered(root, device):
     sync(root)
     device.scribble("GTD Reference/Hot water")
-    (root / "Reference" / "Hot water.md").write_text(NOTE + "Edited by hand.\n", encoding="utf-8")
+    change_note(root, "Edited by hand.\n")
     assert sync(root) == 0
-    text = (root / "Reference" / "Hot water.md").read_text(encoding="utf-8")
+    text = hot_water(root).read_text(encoding="utf-8")
     assert "Edited by hand." in text and text.endswith("from the tablet\n")
-    sha = cli_sha(root)
-    assert device.docs["GTD Reference/Hot water"] == f"pdf:Hot water:{sha}".encode()
-    assert state(root)["Reference/Hot water.md"]["sha"] == sha
-    assert device.scanned == ["2026-10-12"]
-    assert "RF-C1: Appended a note" in (root / "reMarkable status.md").read_text(encoding="utf-8")
+    assert device.docs["GTD Reference/Hot water"] == f"pdf:Hot water:{cli_sha(root)}".encode()
+    assert state(root)["notes"]["Reference/Hot water.md"]["sha"] == cli_sha(root)
+    (archived,) = device.archived()
+    assert state(root)["archive"][archived]["applied"] is True and device.scans == ["Hot water"]
+    assert "RF-C1: Appended a note" in status(root)
 
 
-def cli_sha(root):
-    from remarkable_gtd.gen.reference import source_sha256
+def test_applied_archive_entries_are_deleted_by_the_next_run_only(root, device):
+    sync(root)
+    device.scribble("GTD Reference/Hot water")
+    change_note(root)
+    sync(root)
+    assert len(device.archived()) == 1
+    assert sync(root) == 0
+    assert device.archived() == [] and state(root)["archive"] == {}
 
-    return source_sha256(root / "Reference" / "Hot water.md")
+
+def test_uncommitted_apply_is_not_forgotten_when_the_push_fails(root, device):
+    """The state file is what is committed; a lost push loses the record, and the
+    archived copy is found again by listing."""
+    sync(root)
+    device.scribble("GTD Reference/Hot water")
+    change_note(root)
+    saved = (root / ".remarkable-reference.json").read_text(encoding="utf-8")
+    note_before = hot_water(root).read_text(encoding="utf-8")
+    sync(root)
+    (root / ".remarkable-reference.json").write_text(saved, encoding="utf-8")  # the push failed
+    hot_water(root).write_text(note_before, encoding="utf-8")
+    assert sync(root, "--read-ink") == 0
+    assert device.scans == ["Hot water", "Hot water"] and len(device.archived()) >= 1
+    assert hot_water(root).read_text(encoding="utf-8").count("from the tablet") == 1
 
 
 def test_read_ink_picks_up_ink_on_an_unchanged_note_once(root, device):
     sync(root)
-    assert sync(root, "--read-ink") == 0 and device.scanned == []
+    assert sync(root, "--read-ink") == 0 and device.scans == []
     device.scribble("GTD Reference/Hot water")
-    assert sync(root, "--read-ink") == 0 and len(device.scanned) == 1
-    assert sync(root, "--read-ink") == 0 and len(device.scanned) == 1
+    assert sync(root, "--read-ink") == 0 and len(device.scans) == 1
+    assert sync(root, "--read-ink") == 0 and len(device.scans) == 1
 
 
-def test_unreadable_ink_leaves_the_device_copy_and_fails_the_run(root, device):
+def test_margin_ink_with_nothing_to_apply_leaves_the_copy_and_warns_once(root, device):
     sync(root)
-    device.docs["GTD Reference/Hot water"] = b"broken"
-    (root / "Reference" / "Hot water.md").write_text(NOTE + "More.\n", encoding="utf-8")
+    device.margin_only = True
+    device.scribble("GTD Reference/Hot water")
+    assert sync(root, "--read-ink") == 0
+    assert device.docs["GTD Reference/Hot water"] == b"inked" and device.archived() == []
+    assert "was not read" in status(root)
+    assert sync(root, "--read-ink") == 0 and device.scans == ["Hot water"]
+
+
+def test_late_ink_in_the_archive_is_applied_on_a_read_ink_run(root, device):
+    sync(root)
+    change_note(root)
+    sync(root)
+    (archived,) = device.archived()
+    assert sync(root, "--read-ink") == 0 and device.scans == []  # still blank: kept
+    device.scribble(archived)
+    assert sync(root, "--read-ink") == 0 and device.scans == ["Hot water"]
+    assert state(root)["archive"][archived]["applied"] is True and hot_water(root).read_text(encoding="utf-8").endswith("from the tablet\n")
+
+
+def test_unreadable_note_does_not_stop_an_inked_one_and_the_run_fails(root, device):
+    (root / "Reference" / "Boiler.md").write_text("# Boiler\n", encoding="utf-8")
+    sync(root)
+    device.docs["GTD Reference/Boiler"] = b"broken"
+    device.scribble("GTD Reference/Hot water")
+    change_note(root)
+    (root / "Reference" / "Boiler.md").write_text("# Boiler\nMore\n", encoding="utf-8")
     assert sync(root) == 1
-    assert device.docs["GTD Reference/Hot water"] == b"broken"
-    assert "none could be read" in (root / "reMarkable status.md").read_text(encoding="utf-8")
+    assert device.docs["GTD Reference/Boiler"] == b"broken"
+    assert hot_water(root).read_text(encoding="utf-8").endswith("from the tablet\n")
+    assert "none could be read" in status(root)
+
+
+def test_failed_upload_after_the_move_recovers_on_the_next_run(root, device):
+    sync(root)
+    change_note(root)
+    device.fail_upload = True
+    assert sync(root) == 1
+    assert "GTD Reference/Hot water" not in device.docs and len(device.archived()) == 1
+    device.fail_upload = False
+    assert sync(root) == 0
+    assert device.docs["GTD Reference/Hot water"] == f"pdf:Hot water:{cli_sha(root)}".encode()
+
+
+def test_failed_render_after_apply_is_not_applied_again(root, device):
+    sync(root)
+    device.scribble("GTD Reference/Hot water")
+    device.scan_text = "overflow now"
+    assert sync(root, "--read-ink") == 0
+    assert "GTD Reference/Hot water" not in device.docs and device.scans == ["Hot water"]
+    assert sync(root) == 0 and sync(root, "--read-ink") == 0
+    assert device.scans == ["Hot water"] and hot_water(root).read_text(encoding="utf-8").count("overflow now") == 1
 
 
 def test_deleted_note_is_removed_from_the_device(root, device):
     sync(root)
-    (root / "Reference" / "Hot water.md").unlink()
+    hot_water(root).unlink()
     assert sync(root) == 0
-    assert device.docs == {} and state(root) == {}
+    assert device.docs == {} and state(root)["notes"] == {}
 
 
 def test_deleted_inked_note_is_archived_with_a_warning(root, device):
     sync(root)
     device.scribble("GTD Reference/Hot water")
-    (root / "Reference" / "Hot water.md").unlink()
+    hot_water(root).unlink()
     assert sync(root) == 0
-    assert list(device.docs) == ["GTD Reference/Archive/Hot water"] and state(root) == {}
-    assert "moved to 'GTD Reference/Archive'" in (root / "reMarkable status.md").read_text(encoding="utf-8")
+    (archived,) = device.archived()
+    assert list(device.docs) == [archived] and state(root)["notes"] == {}
+    assert f"'{archived}'" in status(root)
+    sync(root, "--read-ink")
+    assert device.scans == []  # nothing to apply it to
 
 
-def test_unrenderable_notes_are_skipped_with_a_warning(root, device):
+def test_unreachable_cloud_keeps_a_deleted_notes_record(root, device):
+    sync(root)
+    hot_water(root).unlink()
+    device.offline = True
+    assert sync(root) == 1
+    assert "Reference/Hot water.md" in state(root)["notes"]
+    device.offline = False
+    assert sync(root) == 0 and device.docs == {}
+
+
+def test_moved_note_takes_its_device_copy_with_it(root, device):
+    sync(root)
+    (root / "Reference" / "House").mkdir()
+    hot_water(root).rename(root / "Reference" / "House" / "Hot water.md")
+    device.log.clear()
+    assert sync(root) == 0
+    assert list(device.docs) == ["GTD Reference/House/Hot water"] and device.renders == ["Hot water"]
+    assert list(state(root)["notes"]) == ["Reference/House/Hot water.md"]
+
+
+def test_unrenderable_note_is_recorded_and_not_retried_until_it_changes(root, device):
     (root / "Reference" / "Big.md").write_text("overflow\n", encoding="utf-8")
     assert sync(root) == 0
-    assert set(device.docs) == {"GTD Reference/Hot water"} and "Reference/Big.md" not in state(root)
-    assert "body overflows" in (root / "reMarkable status.md").read_text(encoding="utf-8")
+    assert set(device.docs) == {"GTD Reference/Hot water"} and "body overflows" in status(root)
+    assert state(root)["notes"]["Reference/Big.md"]["error"] == "body overflows"
+    device.renders.clear()
+    before = (root / ".remarkable-reference.json").read_text(encoding="utf-8")
+    assert sync(root) == 0 and device.renders == []
+    assert (root / ".remarkable-reference.json").read_text(encoding="utf-8") == before
+    (root / "Reference" / "Big.md").write_text("fits\n", encoding="utf-8")
+    sync(root)
+    assert "GTD Reference/Big" in device.docs
+
+
+def test_old_flat_state_is_migrated(root, device):
+    sync(root)
+    flat = state(root)["notes"]
+    (root / ".remarkable-reference.json").write_text(json.dumps(flat), encoding="utf-8")
+    device.log.clear()
+    assert sync(root) == 0 and device.log == []
+    assert set(state(root)) == {"notes", "archive"} and set(state(root)["notes"]) == set(flat)
+
+
+def test_archive_entries_expire(root, device):
+    sync(root)
+    change_note(root)
+    sync(root)
+    (archived,) = device.archived()
+    st = state(root)
+    st["archive"][archived]["archived"] = "2026-01-01T00:00:00Z"
+    (root / ".remarkable-reference.json").write_text(json.dumps(st), encoding="utf-8")
+    assert sync(root) == 0 and device.archived() == []
 
 
 def test_folder_and_commit_message_options(root, device, monkeypatch):
@@ -306,7 +490,13 @@ def test_folder_and_commit_message_options(root, device, monkeypatch):
 def test_status_section_replaces_itself_and_keeps_the_sheet_sections(root, device):
     (root / "reMarkable status.md").write_text("---\ngtd: remarkable-status\n---\n# Sheet s\n\n## Applied\n\n- none\n", encoding="utf-8")
     sync(root)
-    (root / "Reference" / "Hot water.md").write_text(NOTE + "More.\n", encoding="utf-8")
+    change_note(root)
     sync(root)
-    status = (root / "reMarkable status.md").read_text(encoding="utf-8")
-    assert status.count("# Reference notes") == 1 and "# Sheet s" in status
+    assert status(root).count("# Reference notes") == 1 and "# Sheet s" in status(root)
+
+
+def test_apply_command_routes_reference_decisions(root):
+    decisions = root / "decisions.json"
+    decisions.write_text(json.dumps({"pages": [page(rows=[{"id": "RF-C1", "inked": True, "act_text": "by hand"}])]}), encoding="utf-8")
+    assert cli.main(["apply", "--vault", str(root), "--today", "2026-10-12", str(decisions)]) == 0
+    assert hot_water(root).read_text(encoding="utf-8").endswith("by hand\n")

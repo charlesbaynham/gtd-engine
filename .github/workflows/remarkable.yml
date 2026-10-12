@@ -1,7 +1,7 @@
 # Reusable reMarkable round-trip: read back yesterday's handwritten sheet,
 # apply the decisions, push, then render and upload today's sheet. Mirrors
-# the GitLab `remarkable` job in gitlab/vault.gitlab-ci.yml, then mirrors
-# Reference/ notes onto the device. Called by a
+# the GitLab `remarkable` job in gitlab/vault.gitlab-ci.yml; the `reference`
+# job then mirrors Reference/ notes onto the device. Called by a
 # vault's thin .github/workflows/remarkable.yml — see README.md.
 name: reMarkable round-trip
 
@@ -149,14 +149,80 @@ jobs:
           export TODAY
           python -m gtd_remarkable publish --vault . --work-dir remarkable-out --today "$TODAY"
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: remarkable-out
+          path: remarkable-out/
+          retention-days: 14
+
+  # Its own job so a daily-sheet failure cannot starve it, and so the commit
+  # below sees only what reference-sync wrote. Same concurrency group: two runs
+  # reading the same device copies would apply the same ink twice.
+  reference:
+    needs: remarkable
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    container: mcr.microsoft.com/playwright/python:v1.56.0-noble
+    concurrency:
+      group: gtd-maintenance
+      cancel-in-progress: false
+    env:
+      RMAPI_DEVICE_TOKEN: ${{ secrets.RMAPI_DEVICE_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_TRACE_DIR: remarkable-out/llm-trace
+    steps:
+      - uses: actions/checkout@v4
+
+      # actions/checkout inside a container image doesn't run as the image's
+      # own user; git refuses to touch $GITHUB_WORKSPACE until told it's safe.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Export optional env vars
+        run: |
+          echo "REMARKABLE_FOLDER=${{ inputs.remarkable_folder }}" >> "$GITHUB_ENV"
+          echo "REMARKABLE_KEEP_DAYS=${{ inputs.remarkable_keep_days }}" >> "$GITHUB_ENV"
+          echo "REMARKABLE_REFERENCE_FOLDER=${{ inputs.remarkable_reference_folder }}" >> "$GITHUB_ENV"
+          if [ -n "${{ inputs.remarkable_archive_folder }}" ]; then echo "REMARKABLE_ARCHIVE_FOLDER=${{ inputs.remarkable_archive_folder }}" >> "$GITHUB_ENV"; fi
+          if [ -n "${{ inputs.openrouter_model }}" ]; then echo "OPENROUTER_MODEL=${{ inputs.openrouter_model }}" >> "$GITHUB_ENV"; fi
+          if [ -n "${{ inputs.openrouter_ai_model }}" ]; then echo "OPENROUTER_AI_MODEL=${{ inputs.openrouter_ai_model }}" >> "$GITHUB_ENV"; fi
+          if [ -n "${{ inputs.openrouter_reasoning }}" ]; then echo "OPENROUTER_REASONING=${{ inputs.openrouter_reasoning }}" >> "$GITHUB_ENV"; fi
+          if [ -n "${{ inputs.openrouter_read_reasoning }}" ]; then echo "OPENROUTER_READ_REASONING=${{ inputs.openrouter_read_reasoning }}" >> "$GITHUB_ENV"; fi
+
+      - name: Install rmapi
+        run: |
+          curl -sSL "https://github.com/ddvk/rmapi/releases/download/v0.0.35/rmapi-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin rmapi
+          rmapi version || true
+
+      - name: Install engine + remarkable-gtd
+        # A ref override must replace the [device] extra, not add to it, or pip
+        # sees two conflicting URLs for remarkable-gtd.
+        run: |
+          if [ -n "${{ inputs.remarkable_gtd_ref }}" ]; then
+            pip install 'playwright==1.56.0' \
+              "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=ci" \
+              "gtd-mcp @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=mcp" \
+              "gtd-remarkable @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=remarkable" \
+              "remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@${{ inputs.remarkable_gtd_ref }}"
+          else
+            pip install 'playwright==1.56.0' \
+              "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=ci" \
+              "gtd-mcp @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=mcp" \
+              "gtd-remarkable[device] @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=remarkable"
+          fi
+
       - name: Sync reference notes
         run: |
           TODAY="$(TZ=${{ inputs.vault_tz }} date +%F)"
           python -m gtd_remarkable reference-sync --vault . --work-dir remarkable-out --today "$TODAY" \
-            --commit-message-file /tmp/reference-commit-msg.txt \
+            --commit-message-file /tmp/commit-msg.txt \
             ${{ inputs.remarkable_reference_read_ink && '--read-ink' || '' }}
 
-      - name: Commit and push reference changes
+      # Even when a note failed: what was applied to the vault from the others
+      # has already been taken off the device's copies.
+      - name: Commit and push
+        if: ${{ !cancelled() }}
         run: |
           if [ -z "$(git status --porcelain)" ]; then
             echo "Nothing changed, skipping commit."
@@ -164,7 +230,7 @@ jobs:
             git config user.name "GTD CI"
             git config user.email "gtd-ci@users.noreply.github.com"
             git add -A
-            git commit -F /tmp/reference-commit-msg.txt
+            git commit -F /tmp/commit-msg.txt
             for attempt in 1 2 3; do
               git push && exit 0
               echo "push rejected, rebasing (attempt $attempt)"
@@ -176,6 +242,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: remarkable-out
+          name: reference-out
           path: remarkable-out/
           retention-days: 14

@@ -140,17 +140,15 @@ class ReferenceSyncResult:
 
     @property
     def touched(self) -> bool:
-        return bool(self.uploaded or self.removed or self.archived or self.apply.applied
-                    or self.apply.warnings or self.apply.skipped)
+        return bool(self.uploaded or self.removed or self.archived or self.apply.applied or self.apply.warnings)
 
 
 def render_reference_section(result: ReferenceSyncResult, run_label: str, today: str) -> str:
     lines = [REFERENCE_HEADING, "", f"Run: {run_label} (today = {today})", ""]
     lines += _section("Rendered and uploaded", result.uploaded)
     lines += _section("Removed from the device", result.removed)
-    lines += _section("Archived on the device (written on)", result.archived)
+    lines += _section("Moved to the device archive", result.archived)
     lines += _section("Applied", result.apply.applied)
-    lines += _section("Skipped", result.apply.skipped)
     lines += _section("Warnings", result.apply.warnings)
     return "\n".join(lines).rstrip("\n") + "\n"
 

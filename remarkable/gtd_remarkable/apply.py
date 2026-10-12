@@ -1116,6 +1116,6 @@ def apply_reference_decisions(vault: Vault, today: date, decisions: dict) -> App
         if "error" in page:
             report.warnings.append(f"{key}: page not scanned — {page['error']}")
             continue
-        report.warnings.extend(f"{key}: {w}" for w in page.get("warnings", []))
+        report.warnings.extend(f"{key}: {w}" for w in page.get("warnings", []) if "gave no reading" not in w)
         _apply_reference_page(vault, today, page, report)
     return report

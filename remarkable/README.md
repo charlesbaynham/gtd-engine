@@ -189,23 +189,38 @@ the last page is a notes page of six blank lines.
 - **Changed notes are re-rendered.** The vault records each uploaded note's
   sha256 in `.remarkable-reference.json` (committed with the run); a note that
   differs is rendered and replaced. Unchanged notes cost no device calls.
-- **Ink is read before a copy is replaced.** The device copy is downloaded
-  first; if it holds strokes they are scanned and applied (lines on the notes
-  page are appended to the note under today's date; a ✦ AI page is interpreted
-  into appends, exact-text edits or Inbox captures), and only then is the note
-  re-rendered from its updated text. Ink anywhere else without ✦ AI is
-  reported, not read. An edit whose quoted text is missing or ambiguous is a
-  warning, never a guess. Ink that will not parse leaves the copy alone and
-  fails the run.
-- **`--read-ink`** also downloads every unchanged note's copy. That is a
-  download per note, so the hourly run leaves it off and a daily schedule turns
-  it on (`remarkable_reference_read_ink` / `REMARKABLE_REFERENCE_READ_INK`);
-  until then ink on an unchanged note waits on the device.
-- **Deleted or renamed notes** are removed from the device, or moved to
-  `GTD Reference/Archive` with a warning if they were written on.
+- **A replaced copy is archived, never deleted.** It is moved to
+  `GTD Reference/Archive/<run stamp>/` (`--reference-archive-folder` /
+  `REMARKABLE_REFERENCE_ARCHIVE_FOLDER`), after its strokes, if any, have been
+  scanned and applied: lines on the notes page are appended to the note under
+  today's date, and a ✦ AI page is interpreted into appends, exact-text edits
+  or Inbox captures. The new copy is then rendered from the updated note. Ink
+  anywhere else without ✦ AI is reported, not read. An edit whose quoted text
+  is missing or ambiguous is a warning, never a guess; the warning names the
+  archive path the ink is still on. Ink that will not parse leaves the copy
+  alone and fails the run (the other notes are still synced and committed).
+- **`--read-ink`** also downloads every unchanged note's copy, and every
+  archived copy not yet applied (the tablet syncs late). That is a download
+  each, so the hourly run leaves it off and a daily schedule turns it on
+  (`remarkable_reference_read_ink` / `REMARKABLE_REFERENCE_READ_INK`); until
+  then ink on an unchanged note waits on the device. Ink that changed nothing
+  (margin writing without ✦ AI) is warned about once and the copy stays put,
+  recorded by a fingerprint of its strokes.
+- **Self-healing.** An archived copy is deleted only once the *committed*
+  `.remarkable-reference.json` says it was applied, or after `--keep-days`
+  (`REMARKABLE_KEEP_DAYS`, default 7; 0 keeps all). So a failed push, a late
+  tablet or a page the agent could not read costs nothing: archive folders the
+  state does not know of are found again by listing on the next `--read-ink`
+  run.
+- **Deleted notes** are removed from the device, or archived with a warning if
+  they were written on. A note moved between folders takes its copy with it.
+  A note that cannot be rendered (body overflow, a `|` in the name) is recorded
+  with its error and skipped until it changes.
 - Results go in a `# Reference notes` section of `reMarkable status.md`.
+  `process` rewrites that file when it handles a sheet, so the section is back
+  only after the next sync that does something.
+- `gtd-remarkable scan` on a reference `.rmdoc` writes its decisions JSON, and
+  `gtd-remarkable apply` applies it.
 
-Replacing a copy discards what is on it. Anything the tablet had not synced
-yet is lost, and so is ink the agent could not interpret, which is reported
-as a warning; the downloaded copy is kept in the run's `remarkable-out/`
-artifact for two weeks.
+Unsynced ink on a blank-looking copy lives on in the archive, not on the
+replacement, until the tablet syncs and a `--read-ink` run reads it.
