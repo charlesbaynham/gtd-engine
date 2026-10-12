@@ -35,10 +35,6 @@ def _targets_note_in(match: re.Match, within: str | None) -> bool:
     return within is None or not prefix or _prefix_points_at(prefix, within)
 
 
-def _drop_prefix(prefix: str) -> str:
-    return ""
-
-
 @dataclass(frozen=True)
 class Retarget:
     """Retarget links to `old` as `new`, keeping each alias and heading.
@@ -46,14 +42,14 @@ class Retarget:
     `within` is the target's real directory, so that links to a same-named
     note elsewhere are left alone. With `bare=False` unprefixed links are
     not rewritten (they stay valid, or are ambiguous). `prefix_for` gives the
-    new folder prefix of a rewritten prefixed link.
+    new folder prefix of a rewritten prefixed link (default: none).
     """
 
     old: str
     new: str
     within: str | None = None
     bare: bool = True
-    prefix_for: Callable[[str], str] = _drop_prefix
+    prefix_for: Callable[[str], str] | None = None
 
 
 def rewrite_links(text: str, retarget: Retarget) -> tuple[str, int]:
@@ -69,7 +65,7 @@ def rewrite_links(text: str, retarget: Retarget) -> tuple[str, int]:
         if not prefix and not retarget.bare:
             bare_left += 1
             return m.group(0)
-        new_prefix = retarget.prefix_for(prefix) if prefix else ""
+        new_prefix = retarget.prefix_for(prefix) if prefix and retarget.prefix_for else ""
         return f"[[{new_prefix}{retarget.new}{m.group(2) or ''}]]"
 
     return link_pattern(retarget.old).sub(replace, text), bare_left

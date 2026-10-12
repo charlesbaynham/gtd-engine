@@ -17,7 +17,6 @@ from .vault import ParseFailure, load_raw, split_front_matter
 REFERENCE_DIR = "Reference"
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-_FENCE = re.compile(r"^\s*(```|~~~)")
 _EMBED = re.compile(r"!\[\[([^\]]+)\]\]")
 _LINK = re.compile(r"(?<!!)\[\[([^\]]+)\]\]")
 _TARGET_END = re.compile(r"\\?\||#")
@@ -70,11 +69,9 @@ class ReferenceNote:
 
     @property
     def headings(self) -> list[dict]:
-        out, fenced = [], False
+        out, fenced = [], projectsmod.fenced_mask(self.lines)
         for i in range(self.body_start, len(self.lines)):
-            if _FENCE.match(self.lines[i]):
-                fenced = not fenced
-            elif not fenced and (m := _HEADING.match(self.lines[i])):
+            if not fenced[i] and (m := _HEADING.match(self.lines[i])):
                 out.append({"level": len(m.group(1)), "text": m.group(2), "line_no": i + 1})
         return out
 
@@ -83,11 +80,9 @@ class ReferenceNote:
         return next((h["text"] for h in self.headings if h["level"] == 1), self.stem)
 
     def _targets(self, pattern: re.Pattern) -> list[str]:
-        found, fenced = [], False
-        for line in self.lines:
-            if _FENCE.match(line):
-                fenced = not fenced
-            elif not fenced:
+        found, fenced = [], projectsmod.fenced_mask(self.lines)
+        for line, in_fence in zip(self.lines, fenced):
+            if not in_fence:
                 found += [_target(m.group(1)) for m in pattern.finditer(line)]
         return _unique([t for t in found if t])
 
@@ -102,10 +97,10 @@ class ReferenceNote:
     def section(self, title: str) -> list[str] | None:
         """Lines of the level-2 section called `title` (heading included), up
         to the next level-1/2 heading; None if the note has no such heading."""
-        idx = projectsmod.find_heading(self.lines, title, level=2)
+        idx = projectsmod.find_heading(self.lines, title, level=2, fences=True)
         if idx is None:
             return None
-        end = projectsmod.section_bounds(self.lines, idx)
+        end = projectsmod.section_bounds(self.lines, idx, fences=True)
         while end > idx + 1 and not self.lines[end - 1].strip():
             end -= 1
         return self.lines[idx:end]

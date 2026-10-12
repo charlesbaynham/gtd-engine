@@ -142,9 +142,53 @@ def test_rewrite_without_done_leaves_done_pages(tmp_path):
     assert (tmp_path / "Project details/Done/Old.md").read_text() == "[[Target]]\n"
 
 
-def test_find_heading_ignores_fenced_text(tmp_path):
+PROJECT = "# Goal\n\n{fence}\n\n## Next Actions\n\n- [ ] one\n\n## Notes\n\n- [ ] not an action\n"
+
+
+def _page(tmp_path, text):
+    from gtd_ci.projects import load_project
+
+    path = tmp_path / "P.md"
+    path.write_text(text, encoding="utf-8")
+    return load_project(path)
+
+
+def test_project_pages_are_read_fence_blind(tmp_path):
+    page = _page(tmp_path, PROJECT.format(fence="```"))
+    assert page is not None and [i.text for i in page.items] == ["one"]
+
+    swallowing = "# Goal\n\n## Next Actions\n\n- [ ] one\n\n```\n\n## Notes\n\n- [ ] two\n"
+    assert [i.text for i in _page(tmp_path, swallowing).items] == ["one"]
+
+    tilde_closed = "# Goal\n\n```\n~~~\n\n## Next Actions\n\n- [ ] one\n"
+    assert [i.text for i in _page(tmp_path, tilde_closed).items] == ["one"]
+
+    indented = "# Goal\n\n    ```\n\n## Next Actions\n\n- [ ] one\n\n## Notes\n\n- [ ] x\n"
+    assert [i.text for i in _page(tmp_path, indented).items] == ["one"]
+
+
+def test_fence_matching_follows_commonmark():
+    from gtd_ci.projects import fenced_mask
+
+    assert fenced_mask(["```", "x", "```", "y"]) == [True, True, True, False]
+    assert fenced_mask(["```", "x", "~~~", "y"]) == [True] * 4  # wrong character does not close
+    assert fenced_mask(["````", "```", "x"]) == [True] * 3  # shorter fence does not close
+    assert fenced_mask(["    ```", "x"]) == [False, False]  # four spaces is a code block, not a fence
+    assert fenced_mask(["  ```", "x", "   ```", "y"]) == [True, True, True, False]
+    assert fenced_mask(["``` a`b", "x"]) == [False, False]
+
+
+def test_reference_notes_honour_fences(tmp_path):
     from gtd_ci.projects import find_heading, section_bounds
 
     lines = ["# G", "## Notes", "```", "## Other", "```", "tail", "## End"]
-    assert find_heading(["```", "## Notes", "```"], "Notes") is None
-    assert section_bounds(lines, 1) == 6
+    assert find_heading(["```", "## Notes", "```"], "Notes", fences=True) is None
+    assert find_heading(["```", "## Notes", "```"], "Notes") == 1
+    assert section_bounds(lines, 1, fences=True) == 6
+    assert section_bounds(lines, 1) == 3
+
+    _write(tmp_path, "Reference/N.md", "# T\n\n~~~\n# not\n[[Fenced]]\n```\n~~~\n\n## Real\n\nx\n\n```\n## Unclosed\n")
+    note = load_vault(tmp_path).reference_notes()["Reference/N.md"]
+    assert [h["text"] for h in note.headings] == ["T", "Real"]
+    assert note.links == []
+    assert note.section("Real") == ["## Real", "", "x", "", "```", "## Unclosed"]

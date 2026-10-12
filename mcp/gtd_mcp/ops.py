@@ -22,10 +22,8 @@ from gtd_ci import lines as linesmod
 from gtd_ci import projects as projectsmod
 from gtd_ci import links as linksmod
 from gtd_ci import reference as referencemod
-from gtd_ci.names import NameRejected, usable_file_name
-from gtd_ci.names import levenshtein as _levenshtein
-from gtd_ci.names import near_names as _near_names
-from gtd_ci.names import normalize as _normalize
+from gtd_ci import names
+from gtd_ci.names import NameRejected
 from gtd_ci.dates import parse_date
 from gtd_ci.lines import Item
 from gtd_ci.model import TICKLER_OFFSETS, Vault, mark_dirty
@@ -156,8 +154,8 @@ def resolve_project_stem(vault: Vault, name: str) -> str:
     if link.resolved is not None and link.resolved_in_done:
         raise OpError(f"project {name!r} only exists under Project details/Done/")
     all_stems = sorted({p.stem for paths in vault.project_index.values() for p in paths})
-    target = _normalize(name)
-    near = [s for s in all_stems if _levenshtein(_normalize(s), target) <= 3]
+    target = names.normalize(name)
+    near = [s for s in all_stems if names.levenshtein(names.normalize(s), target) <= 3]
     if near:
         raise OpError(f"no project named {name!r}; did you mean: {', '.join(near)}?")
     raise OpError(f"no project named {name!r}")
@@ -177,7 +175,7 @@ def nearest_project_stem(vault: Vault, name: str) -> tuple[str | None, list[str]
     if link.resolved is not None and not link.resolved_in_done:
         return link.resolved.stem, []
 
-    return _near_names(sorted({p.stem for paths in vault.project_index.values() for p in paths if "Done" not in p.parts}), name)
+    return names.near_names(sorted({p.stem for paths in vault.project_index.values() for p in paths if "Done" not in p.parts}), name)
 
 
 def _find_loaded_project(vault: Vault, stem: str) -> tuple[projectsmod.ProjectPage, str]:
@@ -556,13 +554,13 @@ def triage(vault: Vault, today: date, *, handle: str, to: str, text: str | None 
         note = find_reference(vault, name)
         created = note is None
         if created:
-            _append_prose([], "triage", text, DEFAULT_NOTE_HEADING, True, today)  # fail before anything exists
+            _append_prose([], "triage", text, DEFAULT_NOTE_HEADING, True, today, fences=True)  # fail before anything exists
             folder, _, stem = name.strip().removesuffix(".md").rpartition("/")
-            _, near = _near_names([n.stem for n in vault.reference_notes().values()], stem)
+            _, near = names.near_names([n.stem for n in vault.reference_notes().values()], stem)
             if near:
                 payload["did_you_mean"] = near
             note = _new_reference(vault, "triage", stem, folder, "")
-        note.lines, _ = _append_prose(note.lines, "triage", text, DEFAULT_NOTE_HEADING, True, today)
+        note.lines, _ = _append_prose(note.lines, "triage", text, DEFAULT_NOTE_HEADING, True, today, fences=True)
         note.trailing_newline = True
         mark_dirty(vault, note.relpath)
         payload.update(reference=note.relpath, reference_created=created)
@@ -863,7 +861,9 @@ def _last_date_subheading(lines: list[str], start: int, end: int) -> str | None:
     return None
 
 
-def _append_note(lines: list[str], heading: str, body: list[str], stamp: str | None) -> tuple[list[str], bool]:
+def _append_note(
+    lines: list[str], heading: str, body: list[str], stamp: str | None, *, fences: bool = False
+) -> tuple[list[str], bool]:
     """Append `body` to the level-2 section named `heading`, creating it at end
     of file if absent. Returns `(lines, created_section)`.
 
@@ -872,7 +872,7 @@ def _append_note(lines: list[str], heading: str, body: list[str], stamp: str | N
     reaches inside any other, `## Next Actions` included.
     """
     lines = list(lines)
-    idx = projectsmod.find_heading(lines, heading, level=2)
+    idx = projectsmod.find_heading(lines, heading, level=2, fences=fences)
     if idx is None:
         if lines and lines[-1].strip() != "":
             lines.append("")
@@ -881,7 +881,7 @@ def _append_note(lines: list[str], heading: str, body: list[str], stamp: str | N
             block += [f"### {stamp}", ""]
         return lines + block + body, True
 
-    end = projectsmod.section_bounds(lines, idx)
+    end = projectsmod.section_bounds(lines, idx, fences=fences)
     insert_at = end
     while insert_at > idx + 1 and lines[insert_at - 1].strip() == "":
         insert_at -= 1
@@ -927,7 +927,7 @@ def append_project_note(
 
 def _append_prose(
     lines: list[str], op: str, text: str, heading: str, dated: bool, today: date,
-    reserved: tuple[str, str] | None = None,
+    reserved: tuple[str, str] | None = None, fences: bool = False,
 ) -> tuple[list[str], dict]:
     """The shared validation and placement for appending prose to a project
     page or a reference note: `(new lines, {heading, created_section, dated})`."""
@@ -954,7 +954,7 @@ def _append_prose(
             )
 
     stamp = today.isoformat() if dated else None
-    new_lines, created = _append_note(lines, heading_v, body, stamp)
+    new_lines, created = _append_note(lines, heading_v, body, stamp, fences=fences)
     return new_lines, {"heading": heading_v, "created_section": created, "dated": stamp}
 
 
@@ -1014,7 +1014,7 @@ def star_project(vault: Vault, today: date, *, project: str, starred: bool = Tru
 
 def _usable_file_name(op: str, label: str, value: str) -> str:
     try:
-        return usable_file_name(label, value)
+        return names.usable_file_name(label, value)
     except NameRejected as exc:
         raise OpError(f"{op}: {exc}") from exc
 
@@ -1293,7 +1293,7 @@ def append_reference(
     (created at end of file if absent), under one `### <today>` subheading
     per day when `dated`."""
     note = resolve_reference(vault, name)
-    note.lines, payload = _append_prose(note.lines, "append_reference", text, heading, dated, today)
+    note.lines, payload = _append_prose(note.lines, "append_reference", text, heading, dated, today, fences=True)
     note.trailing_newline = True
     mark_dirty(vault, note.relpath)
     return OpResult(

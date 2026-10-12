@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from .model import Vault
 
 _HEADING = re.compile(r"^(#{1,2})\s+(.*)$")
-_FENCE = re.compile(r"^\s*(```|~~~)")
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _ITEM = re.compile(r"^([-*]) \[( |x|X)\] (.*)$")
 _LINK = re.compile(r"\[\[([^\]]+)\]\]")
 
@@ -43,16 +43,35 @@ def is_project_dir(path: Path, root: Path) -> bool:
     return path.name != "-Project template.md"
 
 
-def find_heading(lines: list[str], title: str, level: int = 2) -> int | None:
-    """Index of the first heading of `level` whose text equals `title`
-    (trimmed, case-insensitive), or None."""
-    want = title.strip().lower()
-    fenced = False
+def fenced_mask(lines: list[str]) -> list[bool]:
+    """Per line: whether it is a code fence or inside one (CommonMark: up to 3
+    spaces of indent; closed by the same character, at least as many; an
+    unclosed fence runs to the end)."""
+    mask = [False] * len(lines)
+    open_fence: tuple[str, int] | None = None
     for i, line in enumerate(lines):
-        if _FENCE.match(line):
-            fenced = not fenced
+        if open_fence is None:
+            m = _FENCE_OPEN.match(line)
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                open_fence = (m.group(1)[0], len(m.group(1)))
+                mask[i] = True
             continue
-        m = None if fenced else _HEADING.match(line.strip())
+        mask[i] = True
+        char, length = open_fence
+        if re.match(rf"^ {{0,3}}{re.escape(char)}{{{length},}}\s*$", line):
+            open_fence = None
+    return mask
+
+
+def find_heading(lines: list[str], title: str, level: int = 2, *, fences: bool = False) -> int | None:
+    """Index of the first heading of `level` whose text equals `title`
+    (trimmed, case-insensitive), or None. Project pages are read fence-blind
+    (FORMAT.md §6); `fences=True` skips headings inside code fences, as
+    reference notes (§11) do."""
+    want = title.strip().lower()
+    fenced = fenced_mask(lines) if fences else [False] * len(lines)
+    for i, line in enumerate(lines):
+        m = None if fenced[i] else _HEADING.match(line.strip())
         if m and len(m.group(1)) == level and m.group(2).strip().lower() == want:
             return i
     return None
@@ -128,15 +147,13 @@ def set_starred(lines: list[str], starred: bool) -> list[str]:
     return out
 
 
-def section_bounds(lines: list[str], heading_index: int) -> int:
+def section_bounds(lines: list[str], heading_index: int, *, fences: bool = False) -> int:
     """End (exclusive) of the section opened at `heading_index`: the next
-    level-1/2 heading, or EOF (§6, same bound for every level-2 section)."""
-    fenced = False
+    level-1/2 heading, or EOF (§6, same bound for every level-2 section).
+    `fences=True` ignores headings inside code fences (§11)."""
+    fenced = fenced_mask(lines) if fences else [False] * len(lines)
     for i in range(heading_index + 1, len(lines)):
-        if _FENCE.match(lines[i]):
-            fenced = not fenced
-            continue
-        m = None if fenced else _HEADING.match(lines[i].strip())
+        m = None if fenced[i] else _HEADING.match(lines[i].strip())
         if m and len(m.group(1)) in (1, 2):
             return i
     return len(lines)

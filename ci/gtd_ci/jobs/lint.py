@@ -1,7 +1,6 @@
 """lint — report-only findings. FORMAT.md §7, severities in the lint table."""
 from __future__ import annotations
 
-import re
 from datetime import date
 from itertools import combinations
 
@@ -9,25 +8,10 @@ from .. import lines as linesmod
 from .. import projects as projectsmod
 from ..dates import parse_date
 from ..model import Vault
+from ..names import levenshtein, normalize
 from ..report import Report
 
 _ALLOWED_STATUS = {"", "to-schedule", "find-existing", "linked"}
-
-
-def _levenshtein(a: str, b: str) -> int:
-    if a == b:
-        return 0
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, start=1):
-        cur = [i] + [0] * len(b)
-        for j, cb in enumerate(b, start=1):
-            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
-        prev = cur
-    return prev[-1]
-
-
-def _normalize(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 def _check_date_cell(cell: str, file: str, report: Report) -> None:
@@ -127,10 +111,10 @@ def run(vault: Vault, today: date, report: Report) -> None:
         all_pages = sorted(base.rglob("*.md"))
         seen: set[tuple[str, str]] = set()
         for a, b in combinations(all_pages, 2):
-            na, nb = _normalize(a.stem), _normalize(b.stem)
+            na, nb = normalize(a.stem), normalize(b.stem)
             if not na or not nb:
                 continue
-            if _levenshtein(na, nb) <= 3:
+            if levenshtein(na, nb) <= 3:
                 key = tuple(sorted((str(a.relative_to(vault.root)), str(b.relative_to(vault.root)))))
                 if key not in seen:
                     seen.add(key)
