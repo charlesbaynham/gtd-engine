@@ -23,6 +23,12 @@
 #                        unapplied sheets are still read on every run
 #   REMARKABLE_KEEP_DAYS optional — archived sheets uploaded more than this many
 #                        days ago are deleted (default 7; 0 keeps all)
+#   REMARKABLE_REFERENCE_FOLDER optional — device folder for the vault's Reference/
+#                        notes, one PDF each; default "GTD Reference"
+#   REMARKABLE_REFERENCE_READ_INK optional — "true" also reads the ink on every
+#                        unchanged note's device copy (a download per note, so run
+#                        it from a daily schedule, not the hourly one); otherwise
+#                        ink is read only just before a changed note is replaced
 #   REMARKABLE_GTD_REF   optional — overrides the remarkable-gtd commit the engine pins
 #
 # GTD_ENGINE_REF pins which gtd-engine tag/ref every pip install below uses;
@@ -131,6 +137,14 @@ remarkable:
     - python -m gtd_remarkable process --vault . --work-dir remarkable-out --today "$TODAY" --commit-message-file "$COMMIT_MSG"
     - *push-vault
     - python -m gtd_remarkable publish --vault . --work-dir remarkable-out --today "$TODAY"
+    # reference notes: ink on a copy is applied before the copy is replaced
+    - export COMMIT_MSG=/tmp/reference-commit-msg.txt
+    - |
+      READ_INK=""
+      if [ "$REMARKABLE_REFERENCE_READ_INK" = true ]; then READ_INK=--read-ink; fi
+      python -m gtd_remarkable reference-sync --vault . --work-dir remarkable-out --today "$TODAY" \
+        --commit-message-file "$COMMIT_MSG" $READ_INK
+    - *push-vault
   artifacts:
     when: always
     expire_in: 2 weeks

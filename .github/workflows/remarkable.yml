@@ -1,6 +1,7 @@
 # Reusable reMarkable round-trip: read back yesterday's handwritten sheet,
 # apply the decisions, push, then render and upload today's sheet. Mirrors
-# the GitLab `remarkable` job in gitlab/vault.gitlab-ci.yml. Called by a
+# the GitLab `remarkable` job in gitlab/vault.gitlab-ci.yml, then mirrors
+# Reference/ notes onto the device. Called by a
 # vault's thin .github/workflows/remarkable.yml — see README.md.
 name: reMarkable round-trip
 
@@ -25,6 +26,17 @@ on:
         description: Deprecated and ignored. The sheet is now replaced whenever the vault changes, and replaced sheets are still read from the archive.
         type: string
         default: ""
+      remarkable_reference_folder:
+        description: Device folder the vault's Reference/ notes are mirrored into, one PDF per note.
+        type: string
+        default: "GTD Reference"
+      remarkable_reference_read_ink:
+        description: >-
+          Also download every unchanged reference note's device copy and apply what is written on it.
+          One download per note, so too slow to run hourly; call with true from a daily schedule.
+          Without it ink is read only just before a changed note's device copy is replaced.
+        type: boolean
+        default: false
       openrouter_model:
         type: string
         default: ""
@@ -79,6 +91,7 @@ jobs:
         run: |
           echo "REMARKABLE_FOLDER=${{ inputs.remarkable_folder }}" >> "$GITHUB_ENV"
           echo "REMARKABLE_KEEP_DAYS=${{ inputs.remarkable_keep_days }}" >> "$GITHUB_ENV"
+          echo "REMARKABLE_REFERENCE_FOLDER=${{ inputs.remarkable_reference_folder }}" >> "$GITHUB_ENV"
           if [ -n "${{ inputs.remarkable_archive_folder }}" ]; then echo "REMARKABLE_ARCHIVE_FOLDER=${{ inputs.remarkable_archive_folder }}" >> "$GITHUB_ENV"; fi
           if [ -n "${{ inputs.openrouter_model }}" ]; then echo "OPENROUTER_MODEL=${{ inputs.openrouter_model }}" >> "$GITHUB_ENV"; fi
           if [ -n "${{ inputs.openrouter_ai_model }}" ]; then echo "OPENROUTER_AI_MODEL=${{ inputs.openrouter_ai_model }}" >> "$GITHUB_ENV"; fi
@@ -135,6 +148,30 @@ jobs:
           TODAY="$(TZ=${{ inputs.vault_tz }} date +%F)"
           export TODAY
           python -m gtd_remarkable publish --vault . --work-dir remarkable-out --today "$TODAY"
+
+      - name: Sync reference notes
+        run: |
+          TODAY="$(TZ=${{ inputs.vault_tz }} date +%F)"
+          python -m gtd_remarkable reference-sync --vault . --work-dir remarkable-out --today "$TODAY" \
+            --commit-message-file /tmp/reference-commit-msg.txt \
+            ${{ inputs.remarkable_reference_read_ink && '--read-ink' || '' }}
+
+      - name: Commit and push reference changes
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing changed, skipping commit."
+          else
+            git config user.name "GTD CI"
+            git config user.email "gtd-ci@users.noreply.github.com"
+            git add -A
+            git commit -F /tmp/reference-commit-msg.txt
+            for attempt in 1 2 3; do
+              git push && exit 0
+              echo "push rejected, rebasing (attempt $attempt)"
+              git pull --rebase
+            done
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

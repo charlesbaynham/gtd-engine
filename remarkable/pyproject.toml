@@ -11,7 +11,7 @@ dependencies = [
 [project.optional-dependencies]
 # The device / vision half. Installed from GitHub in CI; not needed to run
 # the vault-side tests.
-device = ["remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@a224d011b54e590e0ef6a4858b35f04d4ed958e7"]
+device = ["remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@ef6a6bd8da8bbef64bc576ffd512660b039247ac"]
 test = ["pytest>=7", "pyyaml>=6"]
 
 [project.scripts]
