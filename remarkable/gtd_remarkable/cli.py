@@ -12,6 +12,9 @@ Subcommands (all take ``--vault``, default cwd):
                on the device here so a failed push can simply be re-run.
 - ``publish``  file the applied sheets in the archive, bring the current sheet
                up to date with the (now updated) vault, and clear the archive.
+- ``reference-sync``  mirror ``Reference/`` onto the device, one device-sized
+               PDF per note, and apply what was written on a note before its
+               copy is replaced (see below).
 
 **A sheet is only finished with once we have seen the ink on it.** The cloud
 copy of a sheet the tablet is still holding is byte-identical to the one we
@@ -34,6 +37,17 @@ nothing is applied twice and no sheet is ever renamed. The archive is cleared
 of every sheet stamped before it (the tablet synced after they were
 replaced), and of anything older than ``--keep-days`` (default 7).
 
+**Reference notes** live in their own folder (``REMARKABLE_REFERENCE_FOLDER``,
+default ``GTD Reference``), mirroring the subfolders of ``Reference/``. A note
+is rendered and uploaded when its sha256 differs from the one recorded in
+``.remarkable-reference.json`` (committed with the run). Replacing a device
+copy would destroy what was written on it, so first the copy is downloaded
+and, if it holds strokes, scanned and applied to the note; only then is the
+note re-rendered from its updated text. Unchanged notes are not looked at
+unless ``--read-ink`` asks for it (one download per note, so CI runs it daily
+rather than hourly). A note deleted from the vault is removed from the device,
+or moved to ``<folder>/Archive`` with a warning if it holds ink.
+
 Environment: ``REMARKABLE_FOLDER`` (default ``GTD Daily``),
 ``REMARKABLE_ARCHIVE_FOLDER`` (default ``<folder>/Archive``),
 ``REMARKABLE_KEEP_DAYS`` (default 7; 0 keeps everything),
@@ -52,10 +66,20 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from gtd_ci import reference as referencemod
 from gtd_ci.model import load_vault, save_vault
 
-from .apply import apply_decisions
-from .report import SheetResult, commit_message, render_status, sheet_counts, write_status
+from .apply import apply_decisions, apply_reference_decisions
+from .report import (
+    ReferenceSyncResult,
+    SheetResult,
+    commit_message,
+    reference_commit_message,
+    render_status,
+    sheet_counts,
+    write_reference_status,
+    write_status,
+)
 from .tasks import build_tasks
 
 _LONDON = ZoneInfo("Europe/London")
@@ -475,6 +499,148 @@ def cmd_publish(args) -> int:
     return 0
 
 
+# --- reference notes ----------------------------------------------------------------
+
+REFERENCE_STATE_FILE = ".remarkable-reference.json"
+
+
+def _reference_folder(args) -> str:
+    return args.reference_folder or os.environ.get("REMARKABLE_REFERENCE_FOLDER", "GTD Reference")
+
+
+def read_reference_state(root: Path) -> dict[str, dict]:
+    """``{<Reference/path.md>: {"sha", "uploaded"}}`` as last synced; empty if absent or unreadable."""
+    try:
+        state = json.loads((root / REFERENCE_STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def write_reference_state(root: Path, state: dict[str, dict]) -> None:
+    body = json.dumps(dict(sorted(state.items())), indent=2, ensure_ascii=False) + "\n"
+    (root / REFERENCE_STATE_FILE).write_text(body, encoding="utf-8", newline="\n")
+
+
+def reference_remote(folder: str, relpath: str) -> str:
+    """Where a note lives on the device: its ``Reference/`` subfolders, mirrored."""
+    parts = Path(relpath).relative_to(referencemod.REFERENCE_DIR).with_suffix("").parts
+    return "/".join((folder, *parts))
+
+
+def _ensure_folders(rm, remote: str, made: set[str]) -> None:
+    """``rmapi mkdir`` makes one level at a time."""
+    parent = _parent(remote)
+    parts = parent.split("/")
+    for i in range(1, len(parts) + 1):
+        folder = "/".join(parts[:i])
+        if folder not in made:
+            rm.mkdir(folder)
+            made.add(folder)
+
+
+def _read_device_ink(rm, remote: str, work: Path) -> tuple[Path | None, int, int]:
+    """``(rmdoc, strokes, unreadable layers)`` of a note's device copy; the
+    ``rmdoc`` is ``None`` when there is no copy."""
+    if not rm.exists(remote):
+        return None, 0, 0
+    rmdoc = rm.download(remote, work / "device")
+    return (rmdoc, *ink(rmdoc))
+
+
+def cmd_reference_sync(args) -> int:
+    from remarkable_gtd.gen import reference as refgen
+    from remarkable_gtd.rm import api as rm
+    from remarkable_gtd.scan.sheet import scan_rmdoc
+
+    rm.write_config_from_env()
+    root = Path(args.vault)
+    work = Path(args.work_dir)
+    work.mkdir(parents=True, exist_ok=True)
+    today = _today(args)
+    folder = _reference_folder(args)
+    archive = f"{folder}/Archive"
+    state = read_reference_state(root)
+    vault = load_vault(root)
+    result = ReferenceSyncResult()
+    made: set[str] = set()
+    failed = 0
+
+    def error(message: str) -> None:
+        nonlocal failed
+        failed += 1
+        print(f"  ✗ {message}", file=sys.stderr)
+        result.apply.warnings.append(message)
+
+    for relpath, note in sorted(vault.reference_notes().items()):
+        remote = reference_remote(folder, relpath)
+        sha = refgen.source_sha256(note.path)
+        stale = state.get(relpath, {}).get("sha") != sha
+        if not stale and not args.read_ink:
+            continue
+        print(f"→ {relpath}" + ("" if stale else " (reading ink)"))
+        try:
+            rmdoc, strokes, unreadable = _read_device_ink(rm, remote, work)
+            if rmdoc is not None and not strokes and unreadable:
+                error(f"{relpath}: {unreadable} stroke layer(s) on the device copy but none could be read; left as it is")
+                continue
+            if strokes:
+                decisions, *_ = scan_rmdoc(rmdoc, work / "reference" / note.stem, _scan_cfg(args.ocr), today=today.isoformat())
+                result.apply.extend(apply_reference_decisions(vault, today, decisions))
+                save_vault(vault)
+                sha = refgen.source_sha256(note.path)
+                rm.remove(remote)  # applied: replacing it afterwards must not read it twice
+                state.pop(relpath, None)
+                rmdoc = None
+            elif not stale:
+                continue
+            pdf = work / f"{note.stem}.pdf"
+            try:
+                refgen.render_reference(note.path, root, pdf, source_sha=sha, the_date=today, stem=note.stem)
+            except (ValueError, RuntimeError) as exc:
+                result.apply.warnings.append(f"{relpath}: not rendered — {exc}")
+                continue
+            if rmdoc is not None:
+                rm.remove(remote)
+            _ensure_folders(rm, remote, made)
+            rm.upload(pdf, _parent(remote))
+        except Exception as exc:  # one broken note must not stop the others
+            error(f"{relpath}: {exc}")
+            continue
+        state[relpath] = {"sha": sha, "uploaded": _iso(datetime.now(timezone.utc))}
+        result.uploaded.append(relpath)
+
+    for relpath in sorted(r for r in state if not (root / r).exists()):
+        remote = reference_remote(folder, relpath)
+        print(f"→ {relpath} is gone from the vault")
+        try:
+            rmdoc, strokes, unreadable = _read_device_ink(rm, remote, work)
+            if rmdoc is None:
+                pass
+            elif strokes or unreadable:
+                rm.move(remote, archive)
+                result.archived.append(relpath)
+                result.apply.warnings.append(
+                    f"{relpath}: deleted from the vault but written on, so its device copy was moved to '{archive}' unread")
+            else:
+                rm.remove(remote)
+                result.removed.append(relpath)
+        except Exception as exc:
+            error(f"{relpath}: {exc}")
+            continue
+        del state[relpath]
+
+    save_vault(vault)
+    write_reference_state(root, state)
+    if result.touched:
+        write_reference_status(root, result, _run_label(args), today.isoformat())
+    if args.commit_message_file:
+        Path(args.commit_message_file).write_text(reference_commit_message(result), encoding="utf-8")
+    print(f"reference notes: {len(result.uploaded)} uploaded, {len(result.removed)} removed, "
+          f"{len(result.archived)} archived, {len(result.apply.applied)} edit(s) applied")
+    return 1 if failed else 0
+
+
 # --- parser --------------------------------------------------------------------------
 
 
@@ -505,6 +671,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("publish"); common(s, work=True, device=True)
     s.add_argument("--keep-days", type=int, default=None, help="delete archived sheets uploaded more than this many days ago (env REMARKABLE_KEEP_DAYS, default 7; 0 keeps all)")
     s.set_defaults(func=cmd_publish)
+    s = sub.add_parser("reference-sync"); common(s, work=True)
+    s.add_argument("--reference-folder", default=None, help="device folder (env REMARKABLE_REFERENCE_FOLDER, default 'GTD Reference')")
+    s.add_argument("--ocr", default="openrouter", choices=["openrouter", "tesseract", "null"])
+    s.add_argument("--read-ink", action="store_true",
+                   help="also download every unchanged note's device copy and apply what is written on it")
+    s.add_argument("--commit-message-file"); s.set_defaults(func=cmd_reference_sync)
     return p
 
 

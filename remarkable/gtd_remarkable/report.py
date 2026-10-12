@@ -123,3 +123,54 @@ def commit_message(results: list[SheetResult]) -> str:
 
 def write_status(vault_root: Path, text: str) -> None:
     (vault_root / STATUS_FILE).write_text(text, encoding="utf-8", newline="\n")
+
+
+REFERENCE_HEADING = "# Reference notes"
+
+
+@dataclass
+class ReferenceSyncResult:
+    """What one `reference-sync` run did, as paths under ``Reference/``;
+    ``apply`` carries the edits made from ink and every warning."""
+
+    uploaded: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    archived: list[str] = field(default_factory=list)
+    apply: ApplyReport = field(default_factory=ApplyReport)
+
+    @property
+    def touched(self) -> bool:
+        return bool(self.uploaded or self.removed or self.archived or self.apply.applied
+                    or self.apply.warnings or self.apply.skipped)
+
+
+def render_reference_section(result: ReferenceSyncResult, run_label: str, today: str) -> str:
+    lines = [REFERENCE_HEADING, "", f"Run: {run_label} (today = {today})", ""]
+    lines += _section("Rendered and uploaded", result.uploaded)
+    lines += _section("Removed from the device", result.removed)
+    lines += _section("Archived on the device (written on)", result.archived)
+    lines += _section("Applied", result.apply.applied)
+    lines += _section("Skipped", result.apply.skipped)
+    lines += _section("Warnings", result.apply.warnings)
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def write_reference_status(vault_root: Path, result: ReferenceSyncResult, run_label: str, today: str) -> None:
+    """Put the reference section at the end of `reMarkable status.md`, replacing
+    the previous one and leaving the sheet sections `process` wrote."""
+    path = vault_root / STATUS_FILE
+    existing = path.read_text(encoding="utf-8") if path.exists() else "---\ngtd: remarkable-status\n---\n# reMarkable status\n\n"
+    head = existing.split("\n" + REFERENCE_HEADING, 1)[0].rstrip("\n")
+    write_status(vault_root, head + "\n\n" + render_reference_section(result, run_label, today))
+
+
+def reference_commit_message(result: ReferenceSyncResult) -> str:
+    applied = result.apply.applied
+    if applied:
+        summary = f"remarkable: {len(applied)} reference note edit(s) from the device"
+    else:
+        summary = f"remarkable: reference sync, {len(result.uploaded)} note(s) uploaded, {len(result.removed) + len(result.archived)} removed"
+    body = [f"- {a}" for a in applied] or ["- none"]
+    if result.apply.warnings:
+        body += ["", "Warnings:"] + [f"- {w}" for w in result.apply.warnings]
+    return summary + "\n\n" + "\n".join(body) + "\n"
