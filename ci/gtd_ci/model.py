@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import lines as linesmod
 from . import projects as projectsmod
+from . import reference as referencemod
 from . import tables as tablesmod
 from .vault import ParseFailure, load_raw, split_front_matter, write_raw
 
@@ -108,6 +109,14 @@ class Vault:
     project_index: dict[str, list[Path]] = field(default_factory=dict)
     errors: list[tuple[str, str]] = field(default_factory=list)
     dirty: set[str] = field(default_factory=set)
+    _references: dict[str, referencemod.ReferenceNote] | None = field(default=None, repr=False)
+
+    def reference_notes(self) -> dict[str, referencemod.ReferenceNote]:
+        """`Reference/**/*.md` by relpath, read on first use: most runs never
+        look at them."""
+        if self._references is None:
+            self._references = referencemod.load_references(self.root, self.errors)
+        return self._references
 
 
 def load_vault(root: Path) -> Vault:
@@ -175,3 +184,6 @@ def save_vault(vault: Vault) -> None:
     for relpath, page in vault.projects.items():
         if relpath in vault.dirty:
             write_raw(RawFile(page.path, page.lines, page.trailing_newline))
+    for relpath, note in (vault._references or {}).items():
+        if relpath in vault.dirty:
+            write_raw(RawFile(note.path, note.lines, note.trailing_newline))

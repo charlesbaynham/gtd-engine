@@ -35,6 +35,7 @@ verbatim; the only keys automation reads are `gtd` and, on a project page,
 | `Tickler/Next month.md` | `tickler` | line file, offset +30 days |
 | `Tickler/Next quarter.md` | `tickler` | line file, offset +91 days |
 | `Project details/**/*.md` | `project` (optional) | project page |
+| `Reference/**/*.md` | — | reference note, §11 |
 | `CI status.md` | `ci-status` | written by CI, never read |
 | `reMarkable status.md` | `remarkable-status` | written by the reMarkable job, never read |
 | `.remarkable.json` | — | the reMarkable job's record of the newest sheet applied, §8.1 |
@@ -332,8 +333,8 @@ Writes to project pages:
   folder and rewrites every link to it (`[[old]]`, `[[old|alias]]`,
   `[[old#heading]]`, with or without a folder prefix) in the table cells,
   the Inbox and Tickler lines and the other active project pages, keeping
-  any alias or heading. Files automation does not manage (`Reference/`,
-  `Done/`) are not rewritten.
+  any alias or heading. Reference notes (§11) are rewritten too; `Done/`
+  pages are not.
 
 - **Archiving** a project (marking the whole project done) moves the page
   to `Project details/Done/<name>.md` and removes every Next actions,
@@ -495,3 +496,40 @@ stripping and row-formatting rules against the `plugin-*` cases.
 (§4.2/§4.3); both must round-trip byte-for-byte, and a fixture that adds a
 Project value to a 4-column table should assert the upgraded header,
 separator and padded rows in `expected/`.
+
+## 11. Reference notes
+
+`Reference/` holds notes that are kept and never actioned: how the boiler is
+plumbed, a decision record, a checklist for a trip. They have no required
+shape.
+
+- **Any markdown**, in `Reference/` or any subfolder of it. A note's name is
+  its filename stem. Front matter is optional and never read.
+- **Embeds** `![[file]]` resolve to `attachments/`, as everywhere else in the
+  vault. **Wiki-links** `[[Name]]` (with the alias, heading and folder-prefix
+  forms of §6) may point at project pages or other reference notes. A stem
+  should not be shared by a project and a reference note, or between two
+  reference notes, since a link names only the stem.
+- A note's **title** is its first level-1 heading, else its stem. Headings
+  inside fenced code blocks are not headings.
+- A note is a **parse failure** (§9) only for the encoding rules of §1; it is
+  then skipped and reported like any other file.
+
+Automation never reorganises a note. It may only:
+
+- **Append** prose, with the convention of §6 "Appending a note": at the end
+  of a level-2 section (`## Notes` by default, created at end of file if
+  absent), under a `### <YYYY-MM-DD>` subheading at most once per day per
+  section, the text verbatim and free of level-1/2 headings.
+- **Replace exact text** it was explicitly asked to replace: a substring that
+  occurs exactly once, swapped for the new text. No match, or more than one,
+  changes nothing.
+- **Create** a note that does not exist yet, **move** it between folders or
+  **rename** it, and **delete** it on request. A rename or move retargets
+  every link to it in the table cells, the Inbox and Tickler lines, active
+  and `Done/` project pages and other reference notes, as §6 "Renaming"
+  does for a project (a move rewrites only the links that carry a folder
+  prefix, since a bare `[[Name]]` still resolves).
+
+The nightly jobs (§7) never read or write `Reference/`; the only change they
+can cause there is the link rewrite above when a project is renamed.

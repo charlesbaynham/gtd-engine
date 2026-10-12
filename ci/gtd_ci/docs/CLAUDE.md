@@ -31,7 +31,7 @@ Scheduled.md          date-tied reminders (the calendar is elsewhere)
 Tickler/              Next week / two weeks / month / quarter
 Project details/      one page per project
 Project details/Done/ finished projects, moved not deleted
-Reference/            kept, never actioned
+Reference/            kept, never actioned (readable and appendable over MCP)
 attachments/          images and .msg files embedded with ![[...]]
 ```
 
@@ -134,6 +134,15 @@ a conversation settled — go under `## Notes` on its page, after the
 `## Next Actions` section, with a `### <YYYY-MM-DD>` subheading per day. Never
 inside `## Next Actions`: everything there is an action. Automation only ever
 appends to prose, so a note is safe from the nightly job.
+
+**Store a reference.** Anything worth keeping but not doing goes in
+`Reference/<Name>.md` (any markdown; subfolders are fine; embeds resolve to
+`attachments/`). Add to a note by appending under `## Notes` with a
+`### <YYYY-MM-DD>` subheading; change existing text only by replacing an exact
+quoted snippet, never by rewriting the note. With the MCP server, use
+`create_reference`, `append_reference`, `edit_reference`, `list_reference` and
+`get_reference`; `triage` can file an inbox item straight into a note with
+`to="reference:<Name>"`. Renaming or moving a note rewrites every link to it.
 
 **Mark something done.** Tick the checkbox on the project page *and* remove the
 row from `Next actions.md`. A standalone action with no project: just remove
