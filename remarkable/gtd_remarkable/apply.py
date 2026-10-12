@@ -849,7 +849,7 @@ def _apply_project_head(vault: Vault, today: date, decision: dict, task: dict, t
             if r.payload.get("unmanaged_links"):
                 report.notes.append(
                     f"{task_id}: {r.payload['unmanaged_links']} link(s) to [[{stem}]] outside the managed "
-                    "files (Reference/, Done/) still point at the old name"
+                    "files (Done/) still point at the old name"
                 )
             stem = r.payload["new_path"].rsplit("/", 1)[-1].removesuffix(".md")
         except ops.OpError as exc:

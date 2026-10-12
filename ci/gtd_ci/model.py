@@ -186,4 +186,5 @@ def save_vault(vault: Vault) -> None:
             write_raw(RawFile(page.path, page.lines, page.trailing_newline))
     for relpath, note in (vault._references or {}).items():
         if relpath in vault.dirty:
+            note.path.parent.mkdir(parents=True, exist_ok=True)
             write_raw(RawFile(note.path, note.lines, note.trailing_newline))

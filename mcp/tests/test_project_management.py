@@ -146,7 +146,9 @@ def test_deleting_a_step_removes_its_row_and_later_handles_still_resolve(tmp_pat
 def test_rename_moves_the_page_and_rewrites_every_link(tmp_path):
     root = _a_vault(tmp_path)
     (root / "Reference").mkdir()
-    (root / "Reference" / "Ref.md").write_text("About [[Sample]].\n", encoding="utf-8")
+    (root / "Reference" / "Ref.md").write_text("About [[Sample|it]].\n", encoding="utf-8")
+    (root / "Project details" / "Done").mkdir()
+    (root / "Project details" / "Done" / "Old.md").write_text("Was [[Sample]].\n", encoding="utf-8")
     vault = load_vault(root)
     ops.route_project_action(vault, TODAY, handle=_item_handle(vault, "Second action"), to="tickler",
                              bucket="Next week")
@@ -161,8 +163,9 @@ def test_rename_moves_the_page_and_rewrites_every_link(tmp_path):
     assert "[[Better name#Goal|the goal]]" in page
     assert "| Existing action | [[Better name]] |" in _read(root, "Next actions.md")
     assert "Second action [[Better name]]" in _read(root, "Tickler/Next week.md")
-    assert r.payload["unmanaged_links"] == 1
-    assert _read(root, "Reference/Ref.md") == "About [[Sample]].\n"
+    assert r.payload["unmanaged_links"] == 1  # the Done/ page, which stays as it was
+    assert _read(root, "Project details/Done/Old.md") == "Was [[Sample]].\n"
+    assert _read(root, "Reference/Ref.md") == "About [[Better name|it]].\n"
 
     vault = load_vault(root)
     proj = views.get_project(vault, "Better name")
