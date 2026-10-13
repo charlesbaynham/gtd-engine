@@ -31,6 +31,9 @@
 #                        ink is read only just before a changed note is replaced
 #   REMARKABLE_GTD_REF   optional — overrides the remarkable-gtd commit the engine pins
 #
+# Jobs fetch, rebase onto and push to the project's default branch
+# ($CI_DEFAULT_BRANCH), so a vault on `main` works as well as one on `master`.
+#
 # GTD_ENGINE_REF pins which gtd-engine tag/ref every pip install below uses;
 # override it in the including project's own `variables:` to pin a version.
 workflow:
@@ -55,9 +58,9 @@ stages:
       git add -A
       git commit -F "$COMMIT_MSG"
       for attempt in 1 2 3; do
-        git push -o ci.skip "https://gtd-ci:${GTD_PUSH_TOKEN}@gitlab.com/${CI_PROJECT_PATH}.git" HEAD:master && break
-        echo "push rejected, rebasing onto origin/master (attempt $attempt)"
-        git pull --rebase origin master
+        git push -o ci.skip "https://gtd-ci:${GTD_PUSH_TOKEN}@gitlab.com/${CI_PROJECT_PATH}.git" "HEAD:${CI_DEFAULT_BRANCH}" && break
+        echo "push rejected, rebasing onto origin/${CI_DEFAULT_BRANCH} (attempt $attempt)"
+        git pull --rebase origin "$CI_DEFAULT_BRANCH"
       done
     else
       echo "Nothing changed, skipping commit."
@@ -74,9 +77,9 @@ maintain:
   script:
     - git config user.name "GTD CI"
     - git config user.email "gtd-ci@noreply"
-    - git fetch origin master
-    - git checkout -B master origin/master  # runner starts in detached HEAD
-    - git pull --rebase origin master
+    - git fetch origin "$CI_DEFAULT_BRANCH"
+    - git checkout -B "$CI_DEFAULT_BRANCH" "origin/$CI_DEFAULT_BRANCH"  # runner starts in detached HEAD
+    - git pull --rebase origin "$CI_DEFAULT_BRANCH"
     - pip install --cache-dir .pip-cache "gtd-ci @ git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}#subdirectory=ci"
     - python -m gtd_ci run --today "$(TZ=$VAULT_TZ date +%F)" --commit-message-file "$COMMIT_MSG"
     - python -m gtd_ci refresh-docs --vault .
@@ -85,9 +88,9 @@ maintain:
 .remarkable-setup: &remarkable-setup
     - git config user.name "GTD CI"
     - git config user.email "gtd-ci@noreply"
-    - git fetch origin master
-    - git checkout -B master origin/master
-    - git pull --rebase origin master
+    - git fetch origin "$CI_DEFAULT_BRANCH"
+    - git checkout -B "$CI_DEFAULT_BRANCH" "origin/$CI_DEFAULT_BRANCH"
+    - git pull --rebase origin "$CI_DEFAULT_BRANCH"
     # rmapi (ddvk fork) binary
     - curl -sSL "https://github.com/ddvk/rmapi/releases/download/${RMAPI_VERSION}/rmapi-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin rmapi
     - rmapi version || true
