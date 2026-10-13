@@ -64,6 +64,10 @@ class ApplyReport:
     def changed(self) -> bool:
         return bool(self.applied)
 
+    def extend(self, other: "ApplyReport") -> None:
+        for name in ("applied", "skipped", "warnings", "notes"):
+            getattr(self, name).extend(getattr(other, name))
+
 
 # --- handwriting -> field values -------------------------------------------
 
@@ -849,7 +853,7 @@ def _apply_project_head(vault: Vault, today: date, decision: dict, task: dict, t
             if r.payload.get("unmanaged_links"):
                 report.notes.append(
                     f"{task_id}: {r.payload['unmanaged_links']} link(s) to [[{stem}]] outside the managed "
-                    "files (Reference/, Done/) still point at the old name"
+                    "files (Done/) still point at the old name"
                 )
             stem = r.payload["new_path"].rsplit("/", 1)[-1].removesuffix(".md")
         except ops.OpError as exc:
@@ -1041,4 +1045,79 @@ def apply_decisions(vault: Vault, today: date, decisions: dict, tasks_doc: dict 
         apply_captures(vault, today, page.get("captures", []), page_key, report)
     for decision, task in project_rows:
         apply_task(vault, today, decision, task, report)
+    return report
+
+
+# --- reference notes -------------------------------------------------------------
+
+
+def _reference_op(vault: Vault, today: date, stem: str, op: dict) -> ops.OpResult:
+    kind = (op.get("op") or "").strip()
+    if kind == "reference_append":
+        return ops.append_reference(vault, today, name=stem, text=_op_text(op),
+                                    heading=_op_text(op, "heading") or "Notes")
+    if kind == "reference_edit":
+        return ops.edit_reference(vault, today, name=stem, old=op.get("old") or "", new=op.get("new") or "")
+    if kind == "capture":
+        return ops.capture(vault, today, text=_op_text(op))
+    raise _OpWarning(f"unknown operation {kind!r}")
+
+
+def _apply_reference_page(vault: Vault, today: date, page: dict, report: ApplyReport) -> None:
+    stem = (page.get("note") or {}).get("stem", "")
+    label = f"{stem!r} page {page.get('page_no', '?')}"
+    ai = ai_requested(page)
+
+    def run(tag: str, op: dict) -> None:
+        try:
+            result = _reference_op(vault, today, stem, op)
+        except (_OpWarning, ops.OpError) as exc:
+            report.warnings.append(f"{label} {tag}: {exc}")
+        else:
+            report.applied.append(f"{label} {tag}: {result.summary}")
+
+    for row in page.get("tasks", []):
+        text = (row.get("act_text") or "").strip()
+        if text and not ai:
+            run(row["id"], {"op": "reference_append", "text": text})
+        elif row.get("inked") and not ai:
+            report.warnings.append(f"{label} {row['id']}: ink found but nothing legible was transcribed")
+
+    if ai:
+        reading = ai_intent(page, label, report)
+        if reading is not None:
+            for i, op in enumerate(reading.get("operations") or [], start=1):
+                run(f"✦ op{i} {op.get('op') or '?'}", op)
+            if not reading.get("operations"):
+                report.warnings.append(f"{label}: AI ticked but no change was asked for — nothing changed")
+        elif ai_reading(page) is None:
+            written = [r["suggestion"]["text"] for r in page.get("tasks", [])
+                       if (r.get("suggestion") or {}).get("text")]
+            quoted = f"; written on the notes page: {written!r}" if written else ""
+            report.warnings.append(f"{label}: AI ticked but the scanner produced no reading — nothing changed{quoted}")
+    elif page.get("ink_elsewhere"):
+        report.warnings.append(
+            f"ink on page {page.get('page_no', '?')} of {stem!r} was not read — tick ✦ AI to have it interpreted"
+        )
+
+
+def apply_reference_decisions(vault: Vault, today: date, decisions: dict) -> ApplyReport:
+    """Apply a scanned reference sheet to a loaded vault (the caller saves it).
+
+    Notes-page lines are appended to the note under today's date; everything
+    else on the sheet is read only where ✦ AI was ticked. An edit whose quoted
+    text is missing or ambiguous is reported, never guessed.
+    """
+    report = ApplyReport()
+    for page in decisions.get("pages") or [decisions]:
+        key = page.get("page_key", "?")
+        if page.get("skipped"):
+            continue
+        if "error" in page:
+            report.warnings.append(f"{key}: page not scanned — {page['error']}")
+            continue
+        # Depends on remarkable-gtd's "✦ AI is ticked but the … engine gave no reading"
+        # page warning; `_apply_reference_page` reports the same fact with the lines quoted.
+        report.warnings.extend(f"{key}: {w}" for w in page.get("warnings", []) if "gave no reading" not in w)
+        _apply_reference_page(vault, today, page, report)
     return report

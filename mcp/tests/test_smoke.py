@@ -36,7 +36,9 @@ def test_server_lists_tools_and_answers_get_brief(tmp_path: Path) -> None:
         "triage", "complete", "update", "delete", "create_project",
         "add_project_action", "append_project_note", "set_project_goal",
         "tick_project_action", "archive_project", "rename_project",
-        "route_project_action", "run_maintenance",
+        "route_project_action", "run_maintenance", "list_reference", "get_reference", "get_attachment",
+        "create_reference", "append_reference", "edit_reference", "rename_reference", "move_reference",
+        "delete_reference",
     ]:
         assert expected in names, f"tool {expected!r} missing"
 

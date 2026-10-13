@@ -23,6 +23,12 @@
 #                        unapplied sheets are still read on every run
 #   REMARKABLE_KEEP_DAYS optional — archived sheets uploaded more than this many
 #                        days ago are deleted (default 7; 0 keeps all)
+#   REMARKABLE_REFERENCE_FOLDER optional — device folder for the vault's Reference/
+#                        notes, one PDF each; default "GTD Reference"
+#   REMARKABLE_REFERENCE_READ_INK optional — "true" also reads the ink on every
+#                        unchanged note's device copy (a download per note, so run
+#                        it from a daily schedule, not the hourly one); otherwise
+#                        ink is read only just before a changed note is replaced
 #   REMARKABLE_GTD_REF   optional — overrides the remarkable-gtd commit the engine pins
 #
 # GTD_ENGINE_REF pins which gtd-engine tag/ref every pip install below uses;
@@ -41,6 +47,7 @@ variables:
 stages:
   - maintain
   - remarkable
+  - reference
 
 .push-vault: &push-vault
   - |
@@ -75,6 +82,26 @@ maintain:
     - python -m gtd_ci refresh-docs --vault .
     - *push-vault
 
+.remarkable-setup: &remarkable-setup
+    - git config user.name "GTD CI"
+    - git config user.email "gtd-ci@noreply"
+    - git fetch origin master
+    - git checkout -B master origin/master
+    - git pull --rebase origin master
+    # rmapi (ddvk fork) binary
+    - curl -sSL "https://github.com/ddvk/rmapi/releases/download/${RMAPI_VERSION}/rmapi-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin rmapi
+    - rmapi version || true
+    # vault-side packages + the vision/device package from GitHub, all in one
+    # command (bare package names, no direct URLs, see gtd-engine's README).
+    - |
+      ENGINE="git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}"
+      if [ -n "$REMARKABLE_GTD_REF" ]; then
+        DEVICE=("gtd-remarkable @ ${ENGINE}#subdirectory=remarkable" "remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@${REMARKABLE_GTD_REF}")
+      else
+        DEVICE=("gtd-remarkable[device] @ ${ENGINE}#subdirectory=remarkable")
+      fi
+      pip install --cache-dir .pip-cache 'playwright==1.56.0' "gtd-ci @ ${ENGINE}#subdirectory=ci" "gtd-mcp @ ${ENGINE}#subdirectory=mcp" "${DEVICE[@]}"
+
 remarkable:
   # Read back yesterday's sheet from the reMarkable, apply the handwritten
   # decisions to the vault, push, then upload today's sheet. Steps:
@@ -108,29 +135,48 @@ remarkable:
   cache:
     key: remarkable-pip
     paths: [.pip-cache/]
+  before_script: *remarkable-setup
   script:
-    - git config user.name "GTD CI"
-    - git config user.email "gtd-ci@noreply"
-    - git fetch origin master
-    - git checkout -B master origin/master
-    - git pull --rebase origin master
-    # rmapi (ddvk fork) binary
-    - curl -sSL "https://github.com/ddvk/rmapi/releases/download/${RMAPI_VERSION}/rmapi-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin rmapi
-    - rmapi version || true
-    # vault-side packages + the vision/device package from GitHub, all in one
-    # command (bare package names, no direct URLs, see gtd-engine's README).
-    - |
-      ENGINE="git+https://github.com/charlesbaynham/gtd-engine@${GTD_ENGINE_REF}"
-      if [ -n "$REMARKABLE_GTD_REF" ]; then
-        DEVICE=("gtd-remarkable @ ${ENGINE}#subdirectory=remarkable" "remarkable-gtd @ git+https://github.com/charlesbaynham/remarkable-gtd@${REMARKABLE_GTD_REF}")
-      else
-        DEVICE=("gtd-remarkable[device] @ ${ENGINE}#subdirectory=remarkable")
-      fi
-      pip install --cache-dir .pip-cache 'playwright==1.56.0' "gtd-ci @ ${ENGINE}#subdirectory=ci" "gtd-mcp @ ${ENGINE}#subdirectory=mcp" "${DEVICE[@]}"
     - export TODAY="$(TZ=$VAULT_TZ date +%F)"
     - python -m gtd_remarkable process --vault . --work-dir remarkable-out --today "$TODAY" --commit-message-file "$COMMIT_MSG"
     - *push-vault
     - python -m gtd_remarkable publish --vault . --work-dir remarkable-out --today "$TODAY"
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - remarkable-out/
+
+reference:
+  # Mirror the vault's Reference/ notes onto the device. Ink written on a copy
+  # is applied to the note before the copy is replaced (moved to the archive).
+  # A job of its own so a daily-sheet failure cannot starve it, and the push
+  # runs even when a note failed: what was applied from the others is already
+  # off the device's copies.
+  stage: reference
+  needs:
+    - job: remarkable
+      optional: true
+  resource_group: remarkable
+  rules:
+    - if: '$RMAPI_DEVICE_TOKEN'
+      when: always
+  image: mcr.microsoft.com/playwright/python:v1.56.0-noble
+  variables:
+    COMMIT_MSG: /tmp/reference-commit-msg.txt
+    RMAPI_VERSION: v0.0.35
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    OPENROUTER_TRACE_DIR: remarkable-out/llm-trace
+  cache:
+    key: remarkable-pip
+    paths: [.pip-cache/]
+  before_script: *remarkable-setup
+  script:
+    - export TODAY="$(TZ=$VAULT_TZ date +%F)"
+    - READ_INK=""; if [ "$REMARKABLE_REFERENCE_READ_INK" = true ]; then READ_INK=--read-ink; fi
+    - python -m gtd_remarkable reference-sync --vault . --work-dir remarkable-out --today "$TODAY" --commit-message-file "$COMMIT_MSG" $READ_INK || touch /tmp/reference-failed
+    - *push-vault
+    - test ! -f /tmp/reference-failed
   artifacts:
     when: always
     expire_in: 2 weeks

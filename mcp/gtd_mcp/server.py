@@ -7,7 +7,7 @@ import threading
 from datetime import date
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import Context, FastMCP, Image
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -173,14 +173,61 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
         return do_read(ctx, lambda vault: views.get_project(vault, name, include_body))
 
     @mcp.tool()
+    def list_reference(ctx: Context, folder: str | None = None) -> list[dict]:
+        """The notes under Reference/ (FORMAT.md §11): `{stem, path, folder,
+        title, headings, embeds}` for each, by path. `folder` limits the list
+        to one subfolder of Reference/ and everything below it. Read a note's
+        text with `get_reference`."""
+        return do_read(ctx, lambda vault: views.reference_notes(vault, folder))
+
+    @mcp.tool()
+    def get_reference(ctx: Context, name: str, section: str | None = None) -> dict:
+        """One reference note: its metadata (`title`, `headings`, `embeds`,
+        `links`, `linked_from`) and its `body` verbatim. `name` is the note's
+        stem (exact, else a unique case-insensitive match; `Sub/Name` picks
+        between same-named notes in different folders). With `section`, `body`
+        is only that level-2 section, heading line included. Read the body
+        before `edit_reference`, so the text you quote is the real text. Images
+        a note embeds are fetched with `get_attachment`."""
+        return do_read(ctx, lambda vault: views.get_reference(vault, name, section))
+
+    @mcp.tool()
+    def get_attachment(ctx: Context, name: str) -> Any:
+        """A file from the vault's attachments/ folder, by the name an
+        `![[embed]]` uses. An image (png/jpeg/webp/gif) comes back as image
+        content; a text file as its text; anything else (a .msg, a PDF) as
+        metadata only. Each also carries `{name, size, mime}`. Files over
+        8 MB are refused."""
+
+        def fn(vault):
+            path = views.attachment_file(vault, name)
+            mime = views.attachment_mime(path)
+            data = path.read_bytes()
+            meta = {"name": name, "size": len(data), "mime": mime}
+            if mime in views.IMAGE_FORMATS:
+                return [meta, Image(data=data, format=views.IMAGE_FORMATS[mime])]
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                return meta
+            return [meta, text] if mime.startswith("text/") or mime in views.TEXT_MIMES else meta
+
+        return do_read(ctx, fn)
+
+    @mcp.tool()
     def search(ctx: Context, query: str, kinds: list[str] | None = None) -> dict:
         """Case-insensitive substring search over typed vault content (never
         raw grep). `kinds` restricts to any of: next-actions, delegated,
-        scheduled, inbox, tickler, projects; omit for all of them."""
+        scheduled, inbox, tickler, projects, reference; omit for all of them.
+        `reference` searches the text of the notes under Reference/ and
+        returns, per matching note, `{stem, path, matches: [{heading,
+        line_no, excerpt}]}`."""
 
         def fn(vault):
             q = query.lower()
-            want = set(kinds) if kinds else {"next-actions", "delegated", "scheduled", "inbox", "tickler", "projects"}
+            want = set(kinds) if kinds else {
+                "next-actions", "delegated", "scheduled", "inbox", "tickler", "projects", "reference",
+            }
             out: dict[str, list[dict]] = {}
             if "next-actions" in want:
                 out["next_actions"] = [i for i in views.next_actions(vault) if q in i["action"].lower()]
@@ -197,6 +244,8 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
                     p for p in views.projects(vault, include_done=True)
                     if q in p["stem"].lower() or (p["goal"] and q in p["goal"].lower())
                 ]
+            if "reference" in want:
+                out["reference"] = views.search_reference(vault, query)
             return out
 
         return do_read(ctx, fn)
@@ -306,7 +355,10 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
     ) -> dict:
         """Move the item a handle addresses (Inbox, Tickler, or any table row)
         to `to`: next-actions, delegated, scheduled, tickler:<bucket>,
-        project:<stem>, inbox, or trash. Strips a returned item's provenance
+        project:<stem>, reference:<name>, inbox, or trash. `reference:<name>`
+        appends the item's text to that reference note as a dated note under
+        `## Notes` (creating the note if it does not exist: the response says
+        `reference_created`). Strips a returned item's provenance
         prefix and stamp first (FORMAT.md §5.1). Extra fields are the
         target's own columns; a source Priority carries over automatically
         when the target also has one and none is given here, and likewise a
@@ -470,9 +522,9 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
     def rename_project(ctx: Context, project: str, new_name: str, dry_run: bool = False) -> dict:
         """Rename a project: its page moves to '<new_name>.md' in the same
         folder and every [[link]] to it in Next actions, Delegated,
-        Scheduled, Inbox, Tickler and the other project pages is rewritten
-        (alias and heading kept). Links in Reference/ or Done/ are not
-        touched; their count comes back as `unmanaged_links`."""
+        Scheduled, Inbox, Tickler, the other project pages and the notes in
+        Reference/ is rewritten (alias and heading kept). Links in Done/ are
+        not touched; their count comes back as `unmanaged_links`."""
         return do_write(ctx, opsmod.rename_project, dry_run, project=project, new_name=new_name)
 
     @mcp.tool()
@@ -501,6 +553,64 @@ def create_server(config: Config) -> tuple[FastMCP, Store]:
             ctx, opsmod.route_project_action, dry_run, handle=handle, to=to, person=person,
             chase_by=chase_by, date=date, deadline=deadline, priority=priority, bucket=bucket,
         )
+
+    # --- write: reference notes ---
+
+    @mcp.tool()
+    def create_reference(ctx: Context, name: str, text: str, folder: str | None = None, dry_run: bool = False) -> dict:
+        """Create the reference note Reference/<folder>/<name>.md (FORMAT.md
+        §11). `text` is written verbatim, headed `# <name>` unless it brings
+        a level-1 heading of its own. Refuses a name already used by a note
+        or a project, and names with `/`, a leading `.` or other characters
+        a file name cannot carry. `folder` is an optional subfolder."""
+        return do_write(ctx, opsmod.create_reference, dry_run, name=name, text=text, folder=folder)
+
+    @mcp.tool()
+    def append_reference(
+        ctx: Context,
+        name: str,
+        text: str,
+        heading: str = opsmod.DEFAULT_NOTE_HEADING,
+        dated: bool = True,
+        dry_run: bool = False,
+    ) -> dict:
+        """Append prose to a reference note, the way `append_project_note`
+        does to a project: `text` lands at the end of the level-2 section
+        `heading` ('Notes' by default; created at end of file if absent),
+        under a `### <today>` subheading when `dated` (one per day). Markdown
+        is written verbatim except that a level-1/2 heading is refused. The
+        safe way to add to a note: nothing already there is touched."""
+        return do_write(ctx, opsmod.append_reference, dry_run, name=name, text=text, heading=heading, dated=dated)
+
+    @mcp.tool()
+    def edit_reference(ctx: Context, name: str, old: str, new: str, dry_run: bool = False) -> dict:
+        """Replace exact text in a reference note: `old` must occur exactly
+        once (copy it from `get_reference`); not found, or found more than
+        once, is refused with the count. Use `append_reference` to add; use
+        this only to correct what is already written."""
+        return do_write(ctx, opsmod.edit_reference, dry_run, name=name, old=old, new=new)
+
+    @mcp.tool()
+    def rename_reference(ctx: Context, name: str, new_name: str, dry_run: bool = False) -> dict:
+        """Rename a reference note and rewrite every [[link]] to it in Next
+        actions, Delegated, Scheduled, Inbox, Tickler, all project pages
+        (Done/ included) and other reference notes, keeping each alias and
+        heading. The count comes back as `rewritten_links`."""
+        return do_write(ctx, opsmod.rename_reference, dry_run, name=name, new_name=new_name)
+
+    @mcp.tool()
+    def move_reference(ctx: Context, name: str, folder: str, dry_run: bool = False) -> dict:
+        """Move a reference note to another subfolder of Reference/ (empty
+        `folder` means Reference/ itself). Links that spell out a folder are
+        rewritten; a bare [[Name]] link still resolves and is left alone."""
+        return do_write(ctx, opsmod.move_reference, dry_run, name=name, folder=folder)
+
+    @mcp.tool()
+    def delete_reference(ctx: Context, name: str, dry_run: bool = False) -> dict:
+        """Delete a reference note outright (git keeps the history). Links to
+        it are left as they are; the response lists them under `linked_from`
+        with a `warning`, so they can be fixed or removed."""
+        return do_write(ctx, opsmod.delete_reference, dry_run, name=name)
 
     # --- housekeeping ---
 

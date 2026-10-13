@@ -45,13 +45,14 @@ tomorrow's brief or maintenance run will do.
 
 **Read:** `list_next_actions`, `list_inbox`, `list_delegated`,
 `list_scheduled`, `list_tickler`, `list_projects`, `get_project`, `search`,
-`lint`.
+`lint`, `list_reference`, `get_reference`, `get_attachment`.
 
 **Write:** `capture`, `add_next_action`, `delegate`, `schedule`,
 `add_to_tickler`, `triage`, `complete`, `update`, `delete`, `create_project`,
 `add_project_action`, `append_project_note`, `set_project_goal`,
 `star_project`, `tick_project_action`, `archive_project`, `rename_project`,
-`route_project_action`.
+`route_project_action`, `create_reference`, `append_reference`,
+`edit_reference`, `rename_reference`, `move_reference`, `delete_reference`.
 
 **Housekeeping:** `run_maintenance`.
 
@@ -70,6 +71,17 @@ subheading unless `dated=False`, and never inside `## Next Actions`;
 made against the real text rather than a guess at it. Together they close
 the gap that used to send project context around the MCP and straight at the
 git remote.
+
+Reference notes (`Reference/**/*.md`, FORMAT.md §11) are free-form markdown
+the tools read and add to but never rewrite. `get_reference` returns a note
+verbatim (or one `## section` of it) and `get_attachment` fetches an image or
+text file the note embeds from `attachments/`. Writes are conservative:
+`append_reference` adds under a dated `## Notes` entry exactly as
+`append_project_note` does, `edit_reference` replaces one exact quoted
+snippet and refuses if it occurs zero or several times, and
+`rename_reference` / `move_reference` rewrite every `[[link]]` to the note
+across the vault. `triage(..., to="reference:<name>")` files an inbox item
+straight into a note, creating it when missing.
 
 Every write tool takes `dry_run: bool = False` and returns
 `{ok, summary, commit, diff, stale, error, ...payload}` — `diff` is populated
